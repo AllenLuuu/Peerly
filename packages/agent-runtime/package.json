@@ -16,6 +16,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-session-backend-sqlite-node": "0.85.1",
     "@peerly/agent-protocol": "workspace:*",
     "zod": "^4.1.5"
   }

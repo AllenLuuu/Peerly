@@ -38,10 +38,42 @@ export const updateAgentInputSchema = z
     message: "At least one change is required",
   });
 
+export const agentSessionSchema = z.strictObject({
+  id: nonEmptyString,
+  agentId: agentIdSchema,
+  createdAt: isoDateTime,
+});
+
+export const createAgentSessionInputSchema = z.strictObject({
+  agentId: agentIdSchema,
+});
+
+export const deleteAgentSessionInputSchema = z.strictObject({
+  agentId: agentIdSchema,
+  sessionId: nonEmptyString,
+});
+
+export const sendAgentMessageInputSchema = z.strictObject({
+  agentId: agentIdSchema,
+  sessionId: nonEmptyString,
+  content: z.string().refine((content) => content.trim().length > 0, {
+    message: "Message content must not be empty",
+  }),
+});
+
+export const agentReplySchema = z.strictObject({
+  content: z.string(),
+});
+
 export const agentRuntimeErrorCodeSchema = z.enum([
   "AGENT_ALREADY_EXISTS",
+  "AGENT_DISABLED",
   "AGENT_NOT_FOUND",
+  "MODEL_NOT_FOUND",
   "MODEL_REQUIRED",
+  "PROVIDER_ERROR",
+  "RUNTIME_CLOSED",
+  "SESSION_NOT_FOUND",
   "VALIDATION_ERROR",
   "INTERNAL_ERROR",
 ]);
@@ -58,6 +90,11 @@ export type AgentModel = z.infer<typeof agentModelSchema>;
 export type RuntimeAgentDefinition = z.infer<typeof runtimeAgentDefinitionSchema>;
 export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
 export type UpdateAgentInput = z.infer<typeof updateAgentInputSchema>;
+export type AgentSession = z.infer<typeof agentSessionSchema>;
+export type CreateAgentSessionInput = z.infer<typeof createAgentSessionInputSchema>;
+export type DeleteAgentSessionInput = z.infer<typeof deleteAgentSessionInputSchema>;
+export type SendAgentMessageInput = z.infer<typeof sendAgentMessageInputSchema>;
+export type AgentReply = z.infer<typeof agentReplySchema>;
 export type AgentRuntimeError = z.infer<typeof agentRuntimeErrorSchema>;
 export type AgentRuntimeErrorCode = z.infer<typeof agentRuntimeErrorCodeSchema>;
 
@@ -67,4 +104,9 @@ export interface AgentRuntime {
   getAgent(id: string): Promise<RuntimeAgentDefinition>;
   updateAgent(id: string, input: UpdateAgentInput): Promise<RuntimeAgentDefinition>;
   deleteAgent(id: string): Promise<void>;
+  createSession(input: CreateAgentSessionInput): Promise<AgentSession>;
+  listSessions(agentId: string): Promise<AgentSession[]>;
+  deleteSession(input: DeleteAgentSessionInput): Promise<void>;
+  sendMessage(input: SendAgentMessageInput): Promise<AgentReply>;
+  close(): Promise<void>;
 }

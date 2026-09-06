@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { runtimeAgentDefinitionSchema, type RuntimeAgentDefinition } from "@peerly/agent-protocol";
 import { z } from "zod";
 
 import type { AgentDefinitionRepository } from "./agent-definition-repository.js";
+import { agentDefinitionPath } from "./agent-paths.js";
 
 const storedAgentDefinitionSchema = runtimeAgentDefinitionSchema.extend({
   deletedAt: z.string().datetime({ offset: true }).optional(),
@@ -14,14 +15,14 @@ const storedAgentDefinitionSchema = runtimeAgentDefinitionSchema.extend({
 type StoredAgentDefinition = z.infer<typeof storedAgentDefinitionSchema>;
 
 export class FileAgentDefinitionRepository implements AgentDefinitionRepository {
-  private readonly definitionsDirectory: string;
+  private readonly agentsDirectory: string;
 
-  constructor(dataDirectory: string) {
-    this.definitionsDirectory = join(dataDirectory, "definitions");
+  constructor(private readonly dataDirectory: string) {
+    this.agentsDirectory = join(dataDirectory, "agents");
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.definitionsDirectory, { recursive: true });
+    await mkdir(this.agentsDirectory, { recursive: true });
   }
 
   async exists(id: string): Promise<boolean> {
@@ -37,12 +38,10 @@ export class FileAgentDefinitionRepository implements AgentDefinitionRepository 
   }
 
   async list(): Promise<RuntimeAgentDefinition[]> {
-    const fileNames = (await readdir(this.definitionsDirectory)).filter((name) =>
-      name.endsWith(".json"),
+    const agentDirectories = (await readdir(this.agentsDirectory, { withFileTypes: true })).filter(
+      (entry) => entry.isDirectory(),
     );
-    const records = await Promise.all(
-      fileNames.map((fileName) => this.readStored(fileName.slice(0, -".json".length))),
-    );
+    const records = await Promise.all(agentDirectories.map((entry) => this.readStored(entry.name)));
     return records
       .filter((record): record is StoredAgentDefinition => Boolean(record && !record.deletedAt))
       .map((record) => this.toPublic(record));
@@ -70,7 +69,7 @@ export class FileAgentDefinitionRepository implements AgentDefinitionRepository 
   }
 
   private filePath(id: string): string {
-    return join(this.definitionsDirectory, `${id}.json`);
+    return agentDefinitionPath(this.dataDirectory, id);
   }
 
   private async readStored(id: string): Promise<StoredAgentDefinition | undefined> {
@@ -91,6 +90,7 @@ export class FileAgentDefinitionRepository implements AgentDefinitionRepository 
     const contents = `${JSON.stringify(agent, undefined, 2)}\n`;
 
     try {
+      await mkdir(dirname(destination), { recursive: true });
       await writeFile(temporary, contents, { encoding: "utf8", flag: "wx" });
       await rename(temporary, destination);
     } finally {

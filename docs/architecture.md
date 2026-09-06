@@ -18,13 +18,13 @@ runtime-cli --------------------> agent-runtime
                                   agent-protocol
 ```
 
-`@peerly/agent-protocol` contains the Runtime's public interface, schemas, and types. It must not export Pi types. `@peerly/agent-runtime` implements that interface and hides storage and, later, Pi integration. `@peerly/contracts` is reserved for browser/server contracts. `@peerly/shared` contains only utilities without domain ownership.
+`@peerly/agent-protocol` contains the Runtime's public interface, schemas, and types. It does not export Pi types. `@peerly/agent-runtime` implements that interface directly with Pi Models, AgentHarness, and the official SQLite session backend. `@peerly/contracts` is reserved for browser/server contracts. `@peerly/shared` contains only utilities without domain ownership.
 
-The server and CLI must not import Runtime implementation internals. If process isolation is needed later, another adapter can implement the same public interface over a remote transport without changing collaboration-domain code.
+The server and CLI call the Runtime's public interface and do not import its storage internals. The implementation is intentionally Pi-specific for the MVP.
 
 ## Data ownership
 
-The Peerly server will persist user-visible chat messages as JSON/JSONL. The runtime will later persist private Pi session state separately. Runtime output becomes a public message only after the server validates and persists it.
+The Peerly server will persist user-visible chat messages as JSON/JSONL. The runtime persists Agent definitions and private Pi session state separately. Each Agent owns an `agents/<agentId>/definition.json` file and an `agents/<agentId>/sessions/sessions.sqlite` database under the configured Runtime data directory. Runtime output becomes a public message only after the server validates and persists it.
 
 ## Deferred infrastructure
 

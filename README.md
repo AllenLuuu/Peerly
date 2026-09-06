@@ -32,15 +32,31 @@ The Runtime is a module, not a separate HTTP service. A host such as the Peerly 
 ```ts
 import { createAgentRuntime } from "@peerly/agent-runtime";
 
+const provider = process.env.PEERLY_MODEL_PROVIDER;
+const modelId = process.env.PEERLY_MODEL_ID;
+if (!provider || !modelId) {
+  throw new Error("Set PEERLY_MODEL_PROVIDER and PEERLY_MODEL_ID first");
+}
+
 const runtime = await createAgentRuntime({
   dataDirectory: "data/agent-runtime",
-  defaultModel: { provider: "faux", modelId: "test-model" },
+  defaultModel: { provider, modelId },
 });
 
 const agent = await runtime.createAgent({
   name: "Researcher",
   instructions: "Find reliable sources.",
 });
+
+const session = await runtime.createSession({ agentId: agent.id });
+const reply = await runtime.sendMessage({
+  agentId: agent.id,
+  sessionId: session.id,
+  content: "What should we research first?",
+});
+
+console.log(reply.content);
+await runtime.close();
 ```
 
-Agent definitions are persisted under the supplied data directory. Host applications will read `PEERLY_MODEL_PROVIDER`, `PEERLY_MODEL_ID`, and `PEERLY_AGENT_DATA_DIR`, then pass those settings into the Runtime. Provider credentials never belong in Agent definitions.
+Agent definitions and private Pi sessions are persisted under the supplied data directory. Host applications will read `PEERLY_MODEL_PROVIDER`, `PEERLY_MODEL_ID`, and `PEERLY_AGENT_DATA_DIR`, then pass those settings into the Runtime. Provider credentials use the provider's standard environment variables and never belong in Agent definitions.
