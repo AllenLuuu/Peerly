@@ -6,7 +6,7 @@ Peerly is implemented as independently reviewed steps. A step never flows direct
 
 1. Present the change plan: behavior, architecture, expected files, result, and acceptance checks.
 2. Wait for explicit user approval before editing code.
-3. Follow TDD: add a failing behavior test, observe the expected failure, implement the minimum behavior, then refactor.
+3. Follow TDD for functional requirements: add failing behavior tests for the scenarios promised by the change plan, observe the expected failure, implement the minimum behavior, then refactor. Do not test private structure or require every internal code edit to have its own test.
 4. Run relevant tests, lint, type checking, builds, and manual acceptance checks.
 5. Request review while all changes remain uncommitted. Report behavior, files, test results, limitations, and exact trial commands.
 6. Address feedback and repeat validation. Commit only after explicit review approval.

@@ -1,23 +1,26 @@
 # Architecture
 
-Peerly has three independently deployable layers:
+Peerly has three logical layers:
 
 1. The web client renders collaboration state and communicates only with the Peerly server.
 2. The Peerly server owns public identity, membership, conversation, message, authorization, and routing data.
-3. The agent runtime owns agent execution and private runtime sessions. It communicates with the server through `@peerly/agent-protocol` and is the only layer allowed to depend on Pi.
+3. The agent runtime owns agent execution and private runtime sessions. For the local MVP it is a TypeScript module called directly by its host, and it is the only layer allowed to depend on Pi.
 
 ## Package boundaries
 
 ```text
 web ----------> contracts <---------- server
                                         |
-runtime-cli --> agent-protocol <--------+
-                    ^                   |
-                    |                   |
-               agent-runtime -----------+
+                                        v
+runtime-cli --------------------> agent-runtime
+                                        |
+                                        v
+                                  agent-protocol
 ```
 
-`@peerly/agent-protocol` contains transport-facing schemas and types. It must not export Pi types. `@peerly/contracts` is reserved for browser/server contracts. `@peerly/shared` contains only utilities without domain ownership.
+`@peerly/agent-protocol` contains the Runtime's public interface, schemas, and types. It must not export Pi types. `@peerly/agent-runtime` implements that interface and hides storage and, later, Pi integration. `@peerly/contracts` is reserved for browser/server contracts. `@peerly/shared` contains only utilities without domain ownership.
+
+The server and CLI must not import Runtime implementation internals. If process isolation is needed later, another adapter can implement the same public interface over a remote transport without changing collaboration-domain code.
 
 ## Data ownership
 
