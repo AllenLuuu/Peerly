@@ -25,6 +25,16 @@ pnpm build
 
 项目采用分步骤实现方式。审批、TDD、Review 和提交规范请参阅[开发流程](docs/development.md)。
 
+## Web 协作界面
+
+同时启动 Peerly 后端和 Web 开发服务器：
+
+```sh
+pnpm dev
+```
+
+浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加其他成员并发起私聊。要同时模拟两位成员，请使用两个不共享 Cookie 的浏览器环境，例如普通窗口和无痕窗口。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
+
 ## Peerly 后端
 
 本地后端将主体和会话存储在 `data/server/state.json` 中，并为每个会话维护一个只追加写入的 JSONL 消息文件。构建并启动后，默认监听 `127.0.0.1:3000`：
@@ -33,7 +43,7 @@ pnpm build
 pnpm server:start
 ```
 
-MVP 使用 `POST /api/dev/session` 选择本地人类身份。API 流程、存储结构和示例命令请参阅[后端使用说明](docs/server.md)。
+MVP 使用 `POST /api/dev/session` 选择本地人类身份，并通过 Socket.IO 向会话参与者推送已经落盘的增量消息。API 流程、存储结构和示例命令请参阅[后端使用说明](docs/server.md)。
 
 ## Agent Runtime
 

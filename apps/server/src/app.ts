@@ -13,6 +13,7 @@ import { ZodError, z } from "zod";
 import { PeerlyError } from "./errors.js";
 import { FilePeerlyRepository } from "./file-peerly-repository.js";
 import { PeerlyService, type PeerlyServiceOptions } from "./peerly-service.js";
+import { attachPeerlyRealtime } from "./realtime.js";
 
 const sessionCookieName = "peerly_session";
 const conversationParamsSchema = z.strictObject({
@@ -29,6 +30,9 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
   const app = Fastify({ logger: false });
 
   await app.register(cookie);
+  const realtime = attachPeerlyRealtime(app, (principalId) =>
+    service.getSessionPrincipal(principalId),
+  );
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -58,6 +62,10 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     principals: service.listPrincipals(actorIdFrom(request)),
   }));
 
+  app.get("/api/dev/principals", async () => ({
+    principals: service.listDevelopmentPrincipals(),
+  }));
+
   app.post("/api/dev/session", async (request, reply) => {
     const input = selectDevSessionInputSchema.parse(request.body);
     const principal = service.requireHumanSession(input.principalId);
@@ -79,6 +87,12 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
       actorIdFrom(request),
       input.participantId,
     );
+    if (result.created) {
+      realtime.publish(
+        { type: "conversation.created", conversation: result.value },
+        result.value.participantIds,
+      );
+    }
     return reply.status(result.created ? 201 : 200).send({ conversation: result.value });
   });
 
@@ -90,6 +104,9 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     const { conversationId } = conversationParamsSchema.parse(request.params);
     const input = sendMessageInputSchema.parse(request.body);
     const result = await service.sendMessage(actorIdFrom(request), conversationId, input);
+    if (result.created) {
+      realtime.publish({ type: "message.created", message: result.value }, result.recipientIds);
+    }
     return reply.status(result.created ? 201 : 200).send({ message: result.value });
   });
 

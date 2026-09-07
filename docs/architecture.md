@@ -10,6 +10,8 @@ Peerly 包含三个逻辑层：
 
 ```text
 web ----------> contracts <---------- server
+ |                                     |
+ +------------- HTTP + Socket.IO ------+
                                         |
                                         v
 runtime-cli --------------------> agent-runtime
@@ -47,14 +49,19 @@ flowchart TD
 flowchart TD
     HTTP[Fastify 路由] --> Session[本地开发身份]
     HTTP --> Service[PeerlyService]
+    HTTP --> Realtime[Socket.IO 实时适配层]
     Session --> Service
     Service --> Domain[Principal、Conversation、Message 规则]
     Service --> Repository[FilePeerlyRepository]
     Repository --> State[state.json]
     Repository --> Messages[每个 Conversation 一个 JSONL]
+    HTTP -->|成功落盘后发布事件| Realtime
+    Realtime --> Rooms[Principal 定向房间]
 ```
 
 Human 和 Agent 共用 `Principal` 可辨识联合类型，以及同一套 Conversation、权限和消息流程。Human 的 HTTP 请求通过 cookie 获得当前操作主体。后续 Agent 编排模块会把 Agent 的 principal ID 传给同一个应用服务，而不是建立第二套消息实现。
+
+Web 使用 HTTP 加载权威状态并发送消息。Socket.IO 只通知在线客户端发生了 `conversation.created` 或 `message.created`，不承担写入职责。服务端只有在文件写入和权限检查成功后才广播事件，并按 Principal 房间只投递给 Conversation 参与者。客户端断线重连后重新通过 HTTP 同步，因此实时事件可以保持轻量的尽力投递语义。
 
 ## 数据归属
 

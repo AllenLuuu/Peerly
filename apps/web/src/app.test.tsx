@@ -1,0 +1,197 @@
+// @vitest-environment jsdom
+
+import "@testing-library/jest-dom/vitest";
+
+import type { Conversation, HumanPrincipal, Message, Principal } from "@peerly/contracts";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { App } from "./app.js";
+import type { PeerlyApi } from "./api/peerly-api-client.js";
+import type {
+  PeerlyRealtimeClient,
+  PeerlyRealtimeHandlers,
+} from "./realtime/peerly-realtime-client.js";
+
+const alice = human("human_alice", "Alice", "admin");
+const bob = human("human_bob", "Bob", "member");
+const charlie = human("human_charlie", "Charlie", "member");
+
+afterEach(cleanup);
+
+describe("Peerly Web", () => {
+  it("首次使用时创建管理员并进入协作界面", async () => {
+    const api = fakeApi({ session: null, developmentPrincipals: [] });
+    const realtime = new FakeRealtimeClient();
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={realtime} />);
+
+    expect(await screen.findByRole("heading", { name: "欢迎使用 Peerly" })).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "你的名字" }), "Alice");
+    await user.click(screen.getByRole("button", { name: "创建管理员" }));
+
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+    expect(api.createHuman).toHaveBeenCalledWith("Alice");
+    expect(api.selectSession).toHaveBeenCalledWith(alice.id);
+    expect(realtime.connected).toBe(true);
+  });
+
+  it("创建私聊、发送消息并实时接收当前会话的新消息", async () => {
+    const conversation = directConversation("conversation_alice_bob", alice.id, bob.id);
+    const sentMessage = message("message_alice_1", conversation.id, alice.id, 1, "你好，Bob");
+    const api = fakeApi({
+      session: alice,
+      principals: [alice, bob, charlie],
+      conversations: [],
+      createdConversation: conversation,
+      sentMessage,
+    });
+    const realtime = new FakeRealtimeClient();
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={realtime} />);
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "与 Bob 私聊" }));
+    expect(await screen.findByRole("heading", { name: "Bob" })).toBeInTheDocument();
+    expect(api.createDirectConversation).toHaveBeenCalledWith(bob.id);
+
+    const composer = screen.getByRole("textbox", { name: "消息内容" });
+    await user.type(composer, "你好，Bob");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("你好，Bob")).toBeInTheDocument();
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      conversation.id,
+      expect.objectContaining({
+        clientMessageId: expect.any(String),
+        content: { type: "text", text: "你好，Bob" },
+      }),
+    );
+
+    await user.type(composer, "第一行");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    await user.type(composer, "第二行");
+    expect(composer).toHaveValue("第一行\n第二行");
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+
+    realtime.emit({
+      type: "message.created",
+      message: message("message_bob_1", conversation.id, bob.id, 2, "你好，Alice"),
+    });
+    expect(await screen.findByText("你好，Alice")).toBeInTheDocument();
+
+    realtime.emit({
+      type: "message.created",
+      message: message("message_other", "conversation_other", charlie.id, 1, "不应显示"),
+    });
+    expect(screen.queryByText("不应显示")).not.toBeInTheDocument();
+
+    realtime.reconnect();
+    await waitFor(() => expect(api.listConversations).toHaveBeenCalledTimes(2));
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("管理员可以添加成员并从成员列表发起私聊", async () => {
+    const api = fakeApi({ session: alice, principals: [alice] });
+    api.createHuman.mockResolvedValue(bob);
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={new FakeRealtimeClient()} />);
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+
+    const memberPanel = screen.getByRole("region", { name: "成员" });
+    await user.type(within(memberPanel).getByRole("textbox", { name: "新成员姓名" }), "Bob");
+    await user.click(within(memberPanel).getByRole("button", { name: "添加成员" }));
+
+    expect(await within(memberPanel).findByText("Bob")).toBeInTheDocument();
+    expect(api.createHuman).toHaveBeenCalledWith("Bob");
+  });
+});
+
+class FakeRealtimeClient implements PeerlyRealtimeClient {
+  connected = false;
+  #handlers: PeerlyRealtimeHandlers | undefined;
+
+  connect(handlers: PeerlyRealtimeHandlers): void {
+    this.connected = true;
+    this.#handlers = handlers;
+  }
+
+  disconnect(): void {
+    this.connected = false;
+  }
+
+  emit(event: Parameters<PeerlyRealtimeHandlers["onEvent"]>[0]): void {
+    this.#handlers?.onEvent(event);
+  }
+
+  reconnect(): void {
+    this.#handlers?.onConnected();
+  }
+}
+
+function fakeApi(options: {
+  session?: HumanPrincipal | null;
+  developmentPrincipals?: HumanPrincipal[];
+  principals?: Principal[];
+  conversations?: Conversation[];
+  createdConversation?: Conversation;
+  sentMessage?: Message;
+}): PeerlyApi & Record<keyof PeerlyApi, ReturnType<typeof vi.fn>> {
+  const createdConversation =
+    options.createdConversation ?? directConversation("conversation_default", alice.id, bob.id);
+  const sentMessage =
+    options.sentMessage ?? message("message_default", createdConversation.id, alice.id, 1, "你好");
+  return {
+    getSession: vi.fn().mockResolvedValue(options.session ?? null),
+    listDevelopmentPrincipals: vi.fn().mockResolvedValue(options.developmentPrincipals ?? [alice]),
+    selectSession: vi.fn().mockResolvedValue(alice),
+    createHuman: vi.fn().mockResolvedValue(alice),
+    listPrincipals: vi.fn().mockResolvedValue(options.principals ?? [alice]),
+    listConversations: vi.fn().mockResolvedValue(options.conversations ?? []),
+    createDirectConversation: vi.fn().mockResolvedValue(createdConversation),
+    listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+    sendMessage: vi.fn().mockResolvedValue(sentMessage),
+  };
+}
+
+function human(id: string, displayName: string, role: HumanPrincipal["role"]): HumanPrincipal {
+  return {
+    id,
+    type: "human",
+    displayName,
+    role,
+    status: "active",
+    createdAt: "2026-09-07T00:00:00.000Z",
+  };
+}
+
+function directConversation(id: string, first: string, second: string): Conversation {
+  return {
+    id,
+    type: "direct",
+    participantIds: [first, second],
+    createdAt: "2026-09-07T00:00:00.000Z",
+    updatedAt: "2026-09-07T00:00:00.000Z",
+  };
+}
+
+function message(
+  id: string,
+  conversationId: string,
+  senderId: string,
+  sequence: number,
+  text: string,
+): Message {
+  return {
+    id,
+    conversationId,
+    senderId,
+    clientMessageId: `${senderId}-${sequence}`,
+    sequence,
+    content: { type: "text", text },
+    createdAt: "2026-09-07T00:00:00.000Z",
+  };
+}

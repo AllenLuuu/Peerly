@@ -1,6 +1,6 @@
 # Peerly 后端使用说明
 
-后端提供本地组织、统一 Principal、单聊 Conversation 和公开聊天消息功能。目前尚未调用 Agent Runtime。
+后端提供本地组织、统一 Principal、单聊 Conversation、公开聊天消息和 Socket.IO 实时通知。目前尚未调用 Agent Runtime。
 
 ## 启动后端
 
@@ -48,6 +48,8 @@ curl -b alice.cookies -X POST http://127.0.0.1:3000/api/principals/humans \
 
 `GET /api/session` 返回 cookie 当前选择的 Principal，`GET /api/principals` 返回组织内统一的成员列表。
 
+Web 的本地身份选择器使用 `GET /api/dev/principals` 在未登录时列出可选 Human。该接口只为本地 MVP 提供，正式认证系统不会沿用这种公开身份选择方式。
+
 ## 单聊流程
 
 创建或获取当前 Principal 与 Bob 之间唯一的单聊 Conversation：
@@ -82,6 +84,17 @@ curl -b alice.cookies \
 ```
 
 只有 Conversation 参与者可以读取或发送其中的消息。后端始终从 session cookie 确定发送者，调用方不能在请求体中提供 `senderId`。
+
+## 实时通知
+
+Socket.IO 与 HTTP 共用 `peerly_session` Cookie。连接建立时后端验证 Human 身份，并将连接加入对应 Principal 的定向房间。
+
+目前只有两种服务端事件，统一通过 `peerly.event` 发送：
+
+- `conversation.created`：当前成员收到一个新私聊 Conversation。
+- `message.created`：当前成员参与的 Conversation 中写入了一条新消息。
+
+实时通知不代替 HTTP 存储。创建 Conversation 或发送消息仍然使用 HTTP；文件写入成功后才会广播。幂等重试返回已有消息时不会再次广播。客户端重连后应重新请求 Conversation 和当前消息，以恢复断线期间可能错过的数据。
 
 ## 本地数据
 

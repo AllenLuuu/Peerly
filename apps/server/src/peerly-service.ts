@@ -18,6 +18,10 @@ interface Created<T> {
   created: boolean;
 }
 
+interface Delivered<T> extends Created<T> {
+  recipientIds: string[];
+}
+
 export interface PeerlyServiceOptions {
   now?: () => string;
   generateId?: (prefix: "human" | "conversation" | "message") => string;
@@ -82,6 +86,15 @@ export class PeerlyService {
     return state.principals;
   }
 
+  listDevelopmentPrincipals(): HumanPrincipal[] {
+    return this.#repository
+      .readState()
+      .principals.filter(
+        (principal): principal is HumanPrincipal =>
+          principal.type === "human" && principal.status === "active",
+      );
+  }
+
   async createDirectConversation(
     actorId: string | undefined,
     participantId: string,
@@ -132,7 +145,7 @@ export class PeerlyService {
     actorId: string | undefined,
     conversationId: string,
     input: SendMessageInput,
-  ): Promise<Created<Message>> {
+  ): Promise<Delivered<Message>> {
     return this.#mutate(async () => {
       const state = this.#repository.readState();
       const actor = this.#requireActor(state, actorId);
@@ -144,7 +157,13 @@ export class PeerlyService {
         (message) =>
           message.senderId === actor.id && message.clientMessageId === input.clientMessageId,
       );
-      if (existing !== undefined) return { value: existing, created: false };
+      if (existing !== undefined) {
+        return {
+          value: existing,
+          created: false,
+          recipientIds: [...conversation.participantIds],
+        };
+      }
 
       const timestamp = this.#now();
       const previousMessage = messages.at(-1);
@@ -161,7 +180,11 @@ export class PeerlyService {
 
       conversation.updatedAt = timestamp;
       await this.#repository.saveState(state);
-      return { value: message, created: true };
+      return {
+        value: message,
+        created: true,
+        recipientIds: [...conversation.participantIds],
+      };
     });
   }
 
