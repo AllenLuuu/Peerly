@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=../../.env.local dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@peerly/agent-runtime": "workspace:*",
     "@peerly/agent-protocol": "workspace:*"
   }
 }

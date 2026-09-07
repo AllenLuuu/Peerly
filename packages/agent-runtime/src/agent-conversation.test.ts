@@ -9,7 +9,7 @@ import {
   fauxProvider,
   type Models,
 } from "@earendil-works/pi-ai";
-import type { AgentRuntime } from "@peerly/agent-protocol";
+import type { AgentRuntime, AgentRuntimeEvent } from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAgentRuntime } from "./index.js";
@@ -64,6 +64,35 @@ function messageText(message: {
   return `${message.role}:${contentText(message.content)}`;
 }
 
+async function sendAndCollect(
+  runtime: AgentRuntime,
+  input: Parameters<AgentRuntime["sendMessage"]>[0],
+): Promise<AgentRuntimeEvent[]> {
+  const events: AgentRuntimeEvent[] = [];
+  for await (const event of runtime.sendMessage(input)) events.push(event);
+  return events;
+}
+
+async function sendAndGetReply(
+  runtime: AgentRuntime,
+  input: Parameters<AgentRuntime["sendMessage"]>[0],
+): Promise<string> {
+  const terminal = (await sendAndCollect(runtime, input)).at(-1);
+  expect(terminal).toMatchObject({ type: "run_completed" });
+  if (terminal?.type !== "run_completed") throw new Error("Expected a completed Agent run");
+  return terminal.content;
+}
+
+async function sendAndGetFailure(
+  runtime: AgentRuntime,
+  input: Parameters<AgentRuntime["sendMessage"]>[0],
+): Promise<Extract<AgentRuntimeEvent, { type: "run_failed" }>> {
+  const terminal = (await sendAndCollect(runtime, input)).at(-1);
+  expect(terminal).toMatchObject({ type: "run_failed" });
+  if (terminal?.type !== "run_failed") throw new Error("Expected a failed Agent run");
+  return terminal;
+}
+
 afterEach(async () => {
   await Promise.all(
     runtimes.splice(0).map(async (runtime) => {
@@ -98,12 +127,12 @@ describe("Agent Runtime conversations", () => {
 
     await expect(runtime.listSessions("assistant")).resolves.toEqual([]);
     await expect(
-      runtime.sendMessage({
+      sendAndGetFailure(runtime, {
         agentId: "assistant",
         sessionId: session.id,
         content: "Hello",
       }),
-    ).rejects.toMatchObject({ code: "SESSION_NOT_FOUND" });
+    ).resolves.toMatchObject({ error: { code: "SESSION_NOT_FOUND" } });
   });
 
   it("keeps multi-turn context in one session and isolates different sessions", async () => {
@@ -126,19 +155,19 @@ describe("Agent Runtime conversations", () => {
     const firstSession = await runtime.createSession({ agentId: "assistant" });
     const secondSession = await runtime.createSession({ agentId: "assistant" });
 
-    await runtime.sendMessage({
+    await sendAndGetReply(runtime, {
       agentId: "assistant",
       sessionId: firstSession.id,
       content: "My project is Peerly.",
     });
     await expect(
-      runtime.sendMessage({
+      sendAndGetReply(runtime, {
         agentId: "assistant",
         sessionId: firstSession.id,
         content: "What is my project?",
       }),
-    ).resolves.toEqual({ content: "Your project is Peerly." });
-    await runtime.sendMessage({
+    ).resolves.toBe("Your project is Peerly.");
+    await sendAndGetReply(runtime, {
       agentId: "assistant",
       sessionId: secondSession.id,
       content: "What is my project?",
@@ -159,7 +188,7 @@ describe("Agent Runtime conversations", () => {
     const firstRuntime = await makeRuntime(dataDirectory, firstFaux.models);
     await createAgent(firstRuntime);
     const session = await firstRuntime.createSession({ agentId: "assistant" });
-    await firstRuntime.sendMessage({
+    await sendAndGetReply(firstRuntime, {
       agentId: "assistant",
       sessionId: session.id,
       content: "Remember Peerly.",
@@ -178,12 +207,12 @@ describe("Agent Runtime conversations", () => {
     const restartedRuntime = await makeRuntime(dataDirectory, secondFaux.models);
 
     await expect(
-      restartedRuntime.sendMessage({
+      sendAndGetReply(restartedRuntime, {
         agentId: "assistant",
         sessionId: session.id,
         content: "What should you remember?",
       }),
-    ).resolves.toEqual({ content: "I remember Peerly." });
+    ).resolves.toBe("I remember Peerly.");
     expect(restoredTranscript).toEqual([
       "user:Remember Peerly.",
       "assistant:Saved.",
@@ -209,12 +238,20 @@ describe("Agent Runtime conversations", () => {
     await createAgent(runtime, { instructions: "Version one.", modelId: "model-v1" });
     const session = await runtime.createSession({ agentId: "assistant" });
 
-    await runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "One" });
+    await sendAndGetReply(runtime, {
+      agentId: "assistant",
+      sessionId: session.id,
+      content: "One",
+    });
     await runtime.updateAgent("assistant", {
       instructions: "Version two.",
       model: { provider: "faux", modelId: "model-v2" },
     });
-    await runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "Two" });
+    await sendAndGetReply(runtime, {
+      agentId: "assistant",
+      sessionId: session.id,
+      content: "Two",
+    });
 
     expect(observedConfigurations).toEqual([
       { modelId: "model-v1", systemPrompt: "Version one." },
@@ -236,13 +273,21 @@ describe("Agent Runtime conversations", () => {
       code: "AGENT_DISABLED",
     });
     await expect(
-      runtime.sendMessage({ agentId: "second", sessionId: session.id, content: "Hello" }),
-    ).rejects.toMatchObject({ code: "SESSION_NOT_FOUND" });
+      sendAndGetFailure(runtime, {
+        agentId: "second",
+        sessionId: session.id,
+        content: "Hello",
+      }),
+    ).resolves.toMatchObject({ error: { code: "SESSION_NOT_FOUND" } });
 
     await runtime.deleteAgent("first");
     await expect(
-      runtime.sendMessage({ agentId: "first", sessionId: session.id, content: "Hello" }),
-    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+      sendAndGetFailure(runtime, {
+        agentId: "first",
+        sessionId: session.id,
+        content: "Hello",
+      }),
+    ).resolves.toMatchObject({ error: { code: "AGENT_NOT_FOUND" } });
   });
 
   it("reports unknown models and provider failures as stable Runtime errors", async () => {
@@ -258,18 +303,20 @@ describe("Agent Runtime conversations", () => {
     const brokenProviderSession = await runtime.createSession({ agentId: "broken-provider" });
 
     await expect(
-      runtime.sendMessage({
+      sendAndGetFailure(runtime, {
         agentId: "unknown-model",
         sessionId: unknownModelSession.id,
         content: "Hello",
       }),
-    ).rejects.toMatchObject({ code: "MODEL_NOT_FOUND" });
+    ).resolves.toMatchObject({ error: { code: "MODEL_NOT_FOUND" } });
     await expect(
-      runtime.sendMessage({
+      sendAndGetFailure(runtime, {
         agentId: "broken-provider",
         sessionId: brokenProviderSession.id,
         content: "Hello",
       }),
-    ).rejects.toMatchObject({ code: "PROVIDER_ERROR", message: "Provider failed" });
+    ).resolves.toMatchObject({
+      error: { code: "PROVIDER_ERROR", message: "Provider failed" },
+    });
   });
 });

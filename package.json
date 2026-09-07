@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "runtime:cli": "pnpm --filter @peerly/runtime-cli... build && pnpm --filter @peerly/runtime-cli start",
     "test": "vitest run",
     "typecheck": "pnpm -r --if-present typecheck"
   },

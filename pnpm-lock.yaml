@@ -35,6 +35,9 @@ importers:
       '@peerly/agent-protocol':
         specifier: workspace:*
         version: link:../../packages/agent-protocol
+      '@peerly/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
 
   apps/server:
     dependencies:

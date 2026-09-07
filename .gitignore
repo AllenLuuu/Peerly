@@ -8,3 +8,4 @@ coverage/
 data/*
 !data/.gitkeep
 *.log
+apps/runtime-cli/data/

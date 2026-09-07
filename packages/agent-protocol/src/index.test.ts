@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  agentRuntimeEventSchema,
   agentRuntimeErrorSchema,
   createAgentInputSchema,
   runtimeAgentDefinitionSchema,
@@ -63,6 +64,28 @@ describe("shared response schemas", () => {
     });
     expect(
       agentRuntimeErrorSchema.safeParse({ code: "SOMETHING_RANDOM", message: "No" }).success,
+    ).toBe(false);
+  });
+
+  it("validates streaming lifecycle and terminal events", () => {
+    const timestamp = "2026-09-06T10:00:00.000Z";
+
+    expect(
+      [
+        { type: "run_queued", timestamp },
+        { type: "run_started", timestamp },
+        { type: "output_delta", timestamp, delta: "Hello" },
+        { type: "run_completed", timestamp, content: "Hello" },
+        { type: "run_cancelled", timestamp },
+        {
+          type: "run_failed",
+          timestamp,
+          error: { code: "PROVIDER_ERROR", message: "Unavailable" },
+        },
+      ].map((event) => agentRuntimeEventSchema.parse(event)),
+    ).toHaveLength(6);
+    expect(
+      agentRuntimeEventSchema.safeParse({ type: "output_delta", timestamp, delta: "" }).success,
     ).toBe(false);
   });
 });

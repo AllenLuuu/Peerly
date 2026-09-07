@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "declaration": true,
+    "lib": ["ES2024", "DOM"],
     "outDir": "dist",
     "rootDir": "src"
   },

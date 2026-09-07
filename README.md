@@ -27,21 +27,22 @@ Implementation is intentionally incremental. See `docs/development.md` for the a
 
 ## Agent Runtime
 
-The Runtime is a module, not a separate HTTP service. A host such as the Peerly server or Runtime CLI creates it and calls its public interface directly:
+The Runtime is a module, not a separate HTTP service. Copy `.env.example` to `.env.local`, configure a model, then start the interactive CLI:
+
+```sh
+pnpm runtime:cli
+```
+
+See the [Runtime CLI usage guide](docs/runtime-cli.md) for configuration, commands, data storage, cancellation behavior, and troubleshooting.
+
+For an OpenAI-compatible endpoint, set `PEERLY_MODEL_PROVIDER=openai-compatible`, `PEERLY_MODEL_ID`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY`. `PEERLY_OPENAI_API` may be `chat-completions` (the default) or `responses`.
+
+A host such as the Peerly server or Runtime CLI creates the Runtime and consumes one event stream per message:
 
 ```ts
-import { createAgentRuntime } from "@peerly/agent-runtime";
+import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
 
-const provider = process.env.PEERLY_MODEL_PROVIDER;
-const modelId = process.env.PEERLY_MODEL_ID;
-if (!provider || !modelId) {
-  throw new Error("Set PEERLY_MODEL_PROVIDER and PEERLY_MODEL_ID first");
-}
-
-const runtime = await createAgentRuntime({
-  dataDirectory: "data/agent-runtime",
-  defaultModel: { provider, modelId },
-});
+const runtime = await createAgentRuntimeFromEnvironment();
 
 const agent = await runtime.createAgent({
   name: "Researcher",
@@ -49,14 +50,18 @@ const agent = await runtime.createAgent({
 });
 
 const session = await runtime.createSession({ agentId: agent.id });
-const reply = await runtime.sendMessage({
-  agentId: agent.id,
-  sessionId: session.id,
-  content: "What should we research first?",
-});
-
-console.log(reply.content);
+const controller = new AbortController();
+for await (const event of runtime.sendMessage(
+  {
+    agentId: agent.id,
+    sessionId: session.id,
+    content: "What should we research first?",
+  },
+  { signal: controller.signal },
+)) {
+  if (event.type === "output_delta") process.stdout.write(event.delta);
+}
 await runtime.close();
 ```
 
-Agent definitions and private Pi sessions are persisted under the supplied data directory. Host applications will read `PEERLY_MODEL_PROVIDER`, `PEERLY_MODEL_ID`, and `PEERLY_AGENT_DATA_DIR`, then pass those settings into the Runtime. Provider credentials use the provider's standard environment variables and never belong in Agent definitions.
+Messages to the same Agent session run in FIFO order; different sessions can run concurrently. The caller cancels an active or queued message with its `AbortSignal`. Agent definitions and private Pi sessions are persisted under the configured data directory, while active queues and streams are process-local. Provider credentials never belong in Agent definitions.

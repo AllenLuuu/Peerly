@@ -22,6 +22,25 @@ runtime-cli --------------------> agent-runtime
 
 The server and CLI call the Runtime's public interface and do not import its storage internals. The implementation is intentionally Pi-specific for the MVP.
 
+Each message call returns a hot, buffered, single-consumer event stream. It reports queued, started, text delta, and one terminal event. Calls for one Agent session execute FIFO, while independent sessions may execute concurrently. Cancellation is scoped to the call through an `AbortSignal`; the Runtime does not expose global run lookup or cancellation APIs.
+
+### Agent Runtime internals
+
+```mermaid
+flowchart TD
+    Runtime[PiAgentRuntime] --> Definitions[AgentDefinitionService]
+    Runtime --> Sessions[PiSessionStore]
+    Runtime --> Coordinator[AgentRunCoordinator]
+    Coordinator --> Runner[PiMessageRunner]
+    Runner --> Definitions
+    Runner --> Sessions
+    Coordinator --> Stream[BufferedEventStream]
+    Runner --> Pi[Pi AgentHarness and Models]
+    Sessions --> SQLite[Pi SQLite session backend]
+```
+
+`PiAgentRuntime` is the public API facade and validation boundary. `AgentRunCoordinator` owns only per-session scheduling, cancellation, and event lifecycle. When a queued request starts, `PiMessageRunner` reads the current Agent definition, opens the session through `PiSessionStore`, and executes one Pi turn. This keeps configuration snapshots at execution time without coupling the coordinator to definition or storage details.
+
 ## Data ownership
 
 The Peerly server will persist user-visible chat messages as JSON/JSONL. The runtime persists Agent definitions and private Pi session state separately. Each Agent owns an `agents/<agentId>/definition.json` file and an `agents/<agentId>/sessions/sessions.sqlite` database under the configured Runtime data directory. Runtime output becomes a public message only after the server validates and persists it.
