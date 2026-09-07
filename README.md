@@ -1,19 +1,19 @@
 # Peerly
 
-Peerly is a collaboration platform where humans and agents participate as first-class members.
+Peerly 是一个让人类和 Agent 以一等成员身份共同参与的协作平台。
 
-The MVP is split into three logical layers:
+MVP 分为三个逻辑层：
 
-- `apps/web`: browser UI.
-- `apps/server`: organizations, principals, conversations, messages, permissions, and routing.
-- `packages/agent-runtime`: agent execution exposed through a transport-neutral TypeScript interface.
+- `apps/web`：浏览器界面。
+- `apps/server`：组织、主体、会话、消息、权限和消息路由。
+- `packages/agent-runtime`：Agent 执行能力，通过与传输方式无关的 TypeScript 接口提供。
 
-## Requirements
+## 环境要求
 
 - Node.js 24
 - pnpm 11
 
-## Workspace checks
+## 工作区检查
 
 ```sh
 pnpm install
@@ -23,21 +23,31 @@ pnpm typecheck
 pnpm build
 ```
 
-Implementation is intentionally incremental. See `docs/development.md` for the approval, TDD, review, and commit workflow.
+项目采用分步骤实现方式。审批、TDD、Review 和提交规范请参阅[开发流程](docs/development.md)。
+
+## Peerly 后端
+
+本地后端将主体和会话存储在 `data/server/state.json` 中，并为每个会话维护一个只追加写入的 JSONL 消息文件。构建并启动后，默认监听 `127.0.0.1:3000`：
+
+```sh
+pnpm server:start
+```
+
+MVP 使用 `POST /api/dev/session` 选择本地人类身份。API 流程、存储结构和示例命令请参阅[后端使用说明](docs/server.md)。
 
 ## Agent Runtime
 
-The Runtime is a module, not a separate HTTP service. Copy `.env.example` to `.env.local`, configure a model, then start the interactive CLI:
+Runtime 是一个 TypeScript 模块，而不是独立的 HTTP 服务。将 `.env.example` 复制为 `.env.local`，配置模型后启动交互式 CLI：
 
 ```sh
 pnpm runtime:cli
 ```
 
-See the [Runtime CLI usage guide](docs/runtime-cli.md) for configuration, commands, data storage, cancellation behavior, and troubleshooting.
+配置方式、命令、数据存储、取消行为和故障排查请参阅 [Runtime CLI 使用说明](docs/runtime-cli.md)。
 
-For an OpenAI-compatible endpoint, set `PEERLY_MODEL_PROVIDER=openai-compatible`, `PEERLY_MODEL_ID`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY`. `PEERLY_OPENAI_API` may be `chat-completions` (the default) or `responses`.
+如果使用 OpenAI-compatible 接口，需要设置 `PEERLY_MODEL_PROVIDER=openai-compatible`、`PEERLY_MODEL_ID`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。`PEERLY_OPENAI_API` 可以设为 `chat-completions`（默认值）或 `responses`。
 
-A host such as the Peerly server or Runtime CLI creates the Runtime and consumes one event stream per message:
+Peerly 后端或 Runtime CLI 等调用方负责创建 Runtime，并为每条消息消费一个事件流：
 
 ```ts
 import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
@@ -45,8 +55,8 @@ import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
 const runtime = await createAgentRuntimeFromEnvironment();
 
 const agent = await runtime.createAgent({
-  name: "Researcher",
-  instructions: "Find reliable sources.",
+  name: "研究助手",
+  instructions: "帮助用户查找可靠资料。",
 });
 
 const session = await runtime.createSession({ agentId: agent.id });
@@ -55,7 +65,7 @@ for await (const event of runtime.sendMessage(
   {
     agentId: agent.id,
     sessionId: session.id,
-    content: "What should we research first?",
+    content: "我们应该先研究什么？",
   },
   { signal: controller.signal },
 )) {
@@ -64,4 +74,4 @@ for await (const event of runtime.sendMessage(
 await runtime.close();
 ```
 
-Messages to the same Agent session run in FIFO order; different sessions can run concurrently. The caller cancels an active or queued message with its `AbortSignal`. Agent definitions and private Pi sessions are persisted under the configured data directory, while active queues and streams are process-local. Provider credentials never belong in Agent definitions.
+同一个 Agent session 中的消息按 FIFO 顺序执行，不同 session 可以并行执行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。Agent Definition 和 Pi 私有 session 持久化在配置的数据目录中，活动队列和事件流只存在于当前进程。Provider 凭证不会写入 Agent Definition。

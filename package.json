@@ -14,6 +14,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "runtime:cli": "pnpm --filter @peerly/runtime-cli... build && pnpm --filter @peerly/runtime-cli start",
+    "server:start": "pnpm --filter @peerly/server... build && pnpm --filter @peerly/server start",
     "test": "vitest run",
     "typecheck": "pnpm -r --if-present typecheck"
   },

@@ -1,15 +1,15 @@
-# Development workflow
+# 开发流程
 
-Peerly is implemented as independently reviewed steps. A step never flows directly into the next one.
+Peerly 按照相互独立的步骤逐步实现。每一步都必须单独完成审批、实现、Review 和提交，不会自动进入下一步。
 
-## Per-step lifecycle
+## 每一步的生命周期
 
-1. Present the change plan: behavior, architecture, expected files, result, and acceptance checks.
-2. Wait for explicit user approval before editing code.
-3. Follow TDD for functional requirements: add failing behavior tests for the scenarios promised by the change plan, observe the expected failure, implement the minimum behavior, then refactor. Do not test private structure or require every internal code edit to have its own test.
-4. Run relevant tests, lint, type checking, builds, and manual acceptance checks.
-5. Request review while all changes remain uncommitted. Report behavior, files, test results, limitations, and exact trial commands.
-6. Address feedback and repeat validation. Commit only after explicit review approval.
-7. Report the commit hash, then stop and prepare a separate plan for the next step.
+1. 给出变更计划，包括功能行为、架构、预计文件、预期结果和验收方式。
+2. 等待用户明确审批，审批前不修改代码。
+3. 按照 TDD 实现功能需求：先为变更计划承诺的场景添加失败的行为测试，确认测试按预期失败，再实现使其通过的最小功能，最后重构。测试不应限定私有结构，也不要求每一处内部代码修改都有单独测试。
+4. 运行相关测试、Lint、类型检查、构建和手工验收。
+5. 在所有改动仍未提交时请求 Review，并报告实际功能、改动文件、测试结果、已知限制和准确的试用命令。
+6. 根据反馈继续修改并重新验证。只有用户明确表示 Review 通过后才能提交。
+7. 报告 commit hash，然后停止实现并单独规划下一步。
 
-Use Conventional Commits. Do not weaken or remove a test to make an implementation pass, do not include unrelated changes, and never commit credentials or generated runtime data.
+Git 提交使用 Conventional Commits。不得为了让实现通过而弱化或删除测试，不得混入无关改动，也不得提交凭证或生成的 Runtime 数据。

@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node --env-file-if-exists=../../.env.local dist/index.js"
   },
   "dependencies": {
-    "@peerly/agent-protocol": "workspace:*",
     "@peerly/contracts": "workspace:*",
-    "@peerly/shared": "workspace:*"
+    "@fastify/cookie": "^11.0.0",
+    "fastify": "^5.0.0",
+    "zod": "^4.1.5"
   }
 }
