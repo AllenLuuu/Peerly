@@ -156,6 +156,7 @@ function delivery(
   return {
     deliveryId: overrides.deliveryId ?? "delivery-1",
     agentId: "assistant",
+    agentPrincipalId: "principal-assistant",
     conversation: { id: overrides.conversationId ?? "conversation-1", type: "direct" },
     messages: [
       {

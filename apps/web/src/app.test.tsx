@@ -163,6 +163,65 @@ describe("Peerly Web", () => {
     expect(screen.queryByText("正在分析需求")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "停止 Researcher" })).not.toBeInTheDocument();
   });
+
+  it("创建群聊、选择结构化 Agent mention 并管理群成员", async () => {
+    const group = groupConversation("conversation_product", "产品讨论", alice.id, [
+      alice.id,
+      bob.id,
+      researcher.id,
+    ]);
+    const updatedGroup = { ...group, participantIds: [alice.id, researcher.id] };
+    const sentMessage: Message = {
+      ...message("message_group_1", group.id, alice.id, 1, "@Researcher 请总结"),
+      content: {
+        type: "text",
+        text: "@Researcher 请总结",
+        mentions: [{ principalId: researcher.id, displayName: "Researcher" }],
+      },
+    };
+    const api = fakeApi({
+      session: alice,
+      principals: [alice, bob, researcher],
+      createdGroup: group,
+      updatedGroup,
+      sentMessage,
+    });
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={new FakeRealtimeClient()} />);
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "新建群聊" }));
+    const createDialog = screen.getByRole("dialog", { name: "新建群聊" });
+    await user.type(within(createDialog).getByRole("textbox", { name: "群聊名称" }), "产品讨论");
+    await user.click(within(createDialog).getByRole("checkbox", { name: "Bob" }));
+    await user.click(within(createDialog).getByRole("checkbox", { name: "Researcher" }));
+    await user.click(within(createDialog).getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("heading", { name: "产品讨论" })).toBeInTheDocument();
+    expect(api.createGroupConversation).toHaveBeenCalledWith("产品讨论", [bob.id, researcher.id]);
+
+    await user.click(screen.getByRole("button", { name: "@ Researcher" }));
+    const composer = screen.getByRole("textbox", { name: "消息内容" });
+    await user.type(composer, "请总结");
+    await user.keyboard("{Enter}");
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      group.id,
+      expect.objectContaining({
+        content: {
+          type: "text",
+          text: "@Researcher 请总结",
+          mentions: [{ principalId: researcher.id, displayName: "Researcher" }],
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "管理群成员" }));
+    const manageDialog = screen.getByRole("dialog", { name: "管理群成员" });
+    await user.click(within(manageDialog).getByRole("checkbox", { name: "Bob" }));
+    await user.click(within(manageDialog).getByRole("button", { name: "保存" }));
+    expect(api.updateGroupParticipants).toHaveBeenCalledWith(group.id, [alice.id, researcher.id]);
+  });
 });
 
 class FakeRealtimeClient implements PeerlyRealtimeClient {
@@ -193,6 +252,8 @@ function fakeApi(options: {
   principals?: Principal[];
   conversations?: Conversation[];
   createdConversation?: Conversation;
+  createdGroup?: Conversation;
+  updatedGroup?: Conversation;
   sentMessage?: Message;
   createdAgent?: AgentPrincipal;
 }): PeerlyApi & Record<keyof PeerlyApi, ReturnType<typeof vi.fn>> {
@@ -209,9 +270,30 @@ function fakeApi(options: {
     listPrincipals: vi.fn().mockResolvedValue(options.principals ?? [alice]),
     listConversations: vi.fn().mockResolvedValue(options.conversations ?? []),
     createDirectConversation: vi.fn().mockResolvedValue(createdConversation),
+    createGroupConversation: vi.fn().mockResolvedValue(options.createdGroup ?? createdConversation),
+    updateGroupParticipants: vi
+      .fn()
+      .mockResolvedValue(options.updatedGroup ?? options.createdGroup ?? createdConversation),
     listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     sendMessage: vi.fn().mockResolvedValue(sentMessage),
     cancelAgentDelivery: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function groupConversation(
+  id: string,
+  name: string,
+  createdBy: string,
+  participantIds: string[],
+): Conversation {
+  return {
+    id,
+    type: "group",
+    name,
+    createdBy,
+    participantIds,
+    createdAt: "2026-09-07T00:00:00.000Z",
+    updatedAt: "2026-09-07T00:00:00.000Z",
   };
 }
 

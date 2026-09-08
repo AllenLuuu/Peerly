@@ -63,9 +63,48 @@ try {
     },
   });
 
-  const messages = await waitForAgentReply(address, conversation.id, sessionCookie);
+  const messages = await waitForAgentReply(address, conversation.id, sessionCookie, 2);
   const reply = messages.find((message) => message.senderId === agent.id);
   if (!reply) throw new Error("超时前没有收到 Agent 的正式回复");
+
+  const groupResponse = await request(address, "/api/conversations/groups", {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { name: "Smoke Test Group", participantIds: [agent.id] },
+  });
+  const group = (await groupResponse.json()).conversation;
+  await request(address, `/api/conversations/${group.id}/messages`, {
+    method: "POST",
+    cookie: sessionCookie,
+    body: {
+      clientMessageId: "real-model-group-ordinary",
+      content: { type: "text", text: "这是一条不应触发 Agent 的普通群消息。" },
+    },
+  });
+  await delay(500);
+  const ordinaryMessagesResponse = await request(
+    address,
+    `/api/conversations/${group.id}/messages?limit=20`,
+    { cookie: sessionCookie },
+  );
+  const ordinaryMessages = (await ordinaryMessagesResponse.json()).items;
+  if (ordinaryMessages.length !== 1) throw new Error("普通群消息错误地触发了 Agent 回复");
+
+  await request(address, `/api/conversations/${group.id}/messages`, {
+    method: "POST",
+    cookie: sessionCookie,
+    body: {
+      clientMessageId: "real-model-group-mention",
+      content: {
+        type: "text",
+        text: `@${agent.displayName} 请确认你收到了群聊 mention。`,
+        mentions: [{ principalId: agent.id, displayName: agent.displayName }],
+      },
+    },
+  });
+  const groupMessages = await waitForAgentReply(address, group.id, sessionCookie, 3);
+  const groupReply = groupMessages.find((message) => message.senderId === agent.id);
+  if (!groupReply) throw new Error("超时前没有收到 Agent 的群聊正式回复");
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -73,6 +112,8 @@ try {
         agent: agent.displayName,
         conversationId: conversation.id,
         reply: reply.content.text,
+        groupConversationId: group.id,
+        groupReply: groupReply.content.text,
       },
       null,
       2,
@@ -83,7 +124,7 @@ try {
   await rm(temporaryDirectory, { recursive: true, force: true });
 }
 
-async function waitForAgentReply(address, conversationId, cookie) {
+async function waitForAgentReply(address, conversationId, cookie, expectedMessageCount) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const response = await request(
@@ -92,7 +133,7 @@ async function waitForAgentReply(address, conversationId, cookie) {
       { cookie },
     );
     const messages = (await response.json()).items;
-    if (messages.length >= 2) return messages;
+    if (messages.length >= expectedMessageCount) return messages;
     await delay(500);
   }
   return [];

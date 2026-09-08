@@ -28,6 +28,8 @@ export interface PeerlyApi {
   listPrincipals(): Promise<Principal[]>;
   listConversations(): Promise<Conversation[]>;
   createDirectConversation(participantId: string): Promise<Conversation>;
+  createGroupConversation(name: string, participantIds: string[]): Promise<Conversation>;
+  updateGroupParticipants(conversationId: string, participantIds: string[]): Promise<Conversation>;
   listMessages(conversationId: string): Promise<MessagePage>;
   sendMessage(conversationId: string, input: SendMessageInput): Promise<Message>;
   cancelAgentDelivery(deliveryId: string): Promise<void>;
@@ -84,6 +86,28 @@ export class HttpPeerlyApi implements PeerlyApi {
         method: "POST",
         body: JSON.stringify({ participantId }),
       })
+    ).conversation;
+  }
+
+  async createGroupConversation(name: string, participantIds: string[]): Promise<Conversation> {
+    return (
+      await request("/api/conversations/groups", conversationResponseSchema, {
+        method: "POST",
+        body: JSON.stringify({ name, participantIds }),
+      })
+    ).conversation;
+  }
+
+  async updateGroupParticipants(
+    conversationId: string,
+    participantIds: string[],
+  ): Promise<Conversation> {
+    return (
+      await request(
+        `/api/conversations/${encodeURIComponent(conversationId)}/participants`,
+        conversationResponseSchema,
+        { method: "PATCH", body: JSON.stringify({ participantIds }) },
+      )
     ).conversation;
   }
 

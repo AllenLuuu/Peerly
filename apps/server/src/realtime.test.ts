@@ -108,6 +108,44 @@ describe("Peerly 实时消息", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(aliceEvents.filter((event) => event.type === "message.created")).toHaveLength(1);
 
+    const groupResponse = await app.inject({
+      method: "POST",
+      url: "/api/conversations/groups",
+      headers: { cookie: bobCookie },
+      payload: { name: "实时群聊", participantIds: [alice.id, charlie.id] },
+    });
+    const group = groupResponse.json<ConversationResponse>().conversation;
+    await vi.waitFor(() => {
+      for (const events of [aliceEvents, bobEvents, charlieEvents]) {
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "conversation.created",
+            conversation: expect.objectContaining({ id: group.id }),
+          }),
+        );
+      }
+    });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/conversations/${group.id}/participants`,
+      headers: { cookie: aliceCookie },
+      payload: { participantIds: [alice.id, bob.id] },
+    });
+    await vi.waitFor(() => {
+      for (const events of [aliceEvents, bobEvents, charlieEvents]) {
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "conversation.updated",
+            conversation: expect.objectContaining({
+              id: group.id,
+              participantIds: expect.not.arrayContaining([charlie.id]),
+            }),
+          }),
+        );
+      }
+    });
+
     aliceSocket.disconnect();
   });
 

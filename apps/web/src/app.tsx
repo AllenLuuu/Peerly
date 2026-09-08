@@ -1,6 +1,7 @@
 import type {
   Conversation,
   HumanPrincipal,
+  Mention,
   Message,
   PeerlyRealtimeEvent,
   Principal,
@@ -30,6 +31,7 @@ export function App({ api, realtime }: AppProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeConversationRef = useRef<Conversation | null>(null);
+  const currentRef = useRef<HumanPrincipal | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -61,6 +63,7 @@ export function App({ api, realtime }: AppProps) {
       api.listConversations(),
     ]);
     setCurrent(session);
+    currentRef.current = session;
     setPrincipals(nextPrincipals);
     setConversations(nextConversations);
     setActiveConversation(null);
@@ -77,10 +80,25 @@ export function App({ api, realtime }: AppProps) {
     if (event.type === "agent.activity") {
       return;
     }
-    if (event.type === "conversation.created") {
+    if (event.type === "conversation.created" || event.type === "conversation.updated") {
+      if (!event.conversation.participantIds.includes(currentRef.current?.id ?? "")) {
+        setConversations((currentConversations) =>
+          currentConversations.filter((conversation) => conversation.id !== event.conversation.id),
+        );
+        if (activeConversationRef.current?.id === event.conversation.id) {
+          activeConversationRef.current = null;
+          setActiveConversation(null);
+          setMessages([]);
+        }
+        return;
+      }
       setConversations((currentConversations) =>
         mergeConversation(currentConversations, event.conversation),
       );
+      if (activeConversationRef.current?.id === event.conversation.id) {
+        activeConversationRef.current = event.conversation;
+        setActiveConversation(event.conversation);
+      }
       return;
     }
     setConversations((currentConversations) =>
@@ -142,6 +160,7 @@ export function App({ api, realtime }: AppProps) {
     await perform(async () => {
       realtime.disconnect();
       setCurrent(null);
+      currentRef.current = null;
       setActiveConversation(null);
       activeConversationRef.current = null;
       setMessages([]);
@@ -174,6 +193,32 @@ export function App({ api, realtime }: AppProps) {
     });
   }
 
+  async function createGroup(name: string, participantIds: string[]): Promise<void> {
+    await perform(async () => {
+      const conversation = await api.createGroupConversation(name, participantIds);
+      setConversations((currentConversations) =>
+        mergeConversation(currentConversations, conversation),
+      );
+      await openConversation(conversation);
+    });
+  }
+
+  async function updateGroupParticipants(
+    conversationId: string,
+    participantIds: string[],
+  ): Promise<void> {
+    await perform(async () => {
+      const conversation = await api.updateGroupParticipants(conversationId, participantIds);
+      setConversations((currentConversations) =>
+        mergeConversation(currentConversations, conversation),
+      );
+      if (activeConversationRef.current?.id === conversation.id) {
+        activeConversationRef.current = conversation;
+        setActiveConversation(conversation);
+      }
+    });
+  }
+
   async function openConversation(conversation: Conversation): Promise<void> {
     activeConversationRef.current = conversation;
     setActiveConversation(conversation);
@@ -185,13 +230,13 @@ export function App({ api, realtime }: AppProps) {
     await perform(() => openConversation(conversation));
   }
 
-  async function sendMessage(text: string): Promise<void> {
+  async function sendMessage(text: string, mentions?: Mention[]): Promise<void> {
     const conversation = activeConversationRef.current;
     if (conversation === null) return;
     await perform(async () => {
       const message = await api.sendMessage(conversation.id, {
         clientMessageId: createClientMessageId(),
-        content: { type: "text", text },
+        content: { type: "text", text, ...(mentions ? { mentions } : {}) },
       });
       if (activeConversationRef.current?.id === conversation.id) {
         setMessages((currentMessages) => mergeMessage(currentMessages, message));
@@ -250,6 +295,8 @@ export function App({ api, realtime }: AppProps) {
           activeConversationId={activeConversation?.id ?? null}
           conversations={conversations}
           current={current}
+          busy={busy}
+          onCreateGroup={createGroup}
           onOpen={selectConversation}
           principals={principals}
         />
@@ -259,6 +306,7 @@ export function App({ api, realtime }: AppProps) {
           current={current}
           messages={messages}
           onSend={sendMessage}
+          onUpdateGroupParticipants={updateGroupParticipants}
           principals={principals}
         />
       </div>

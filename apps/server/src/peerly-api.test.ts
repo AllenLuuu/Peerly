@@ -20,6 +20,9 @@ interface PrincipalBody {
 interface ConversationBody {
   conversation: {
     id: string;
+    type: "direct" | "group";
+    name?: string;
+    createdBy?: string;
     participantIds: string[];
   };
 }
@@ -102,6 +105,34 @@ async function createDirectConversation(app: TestApp, cookie: string, participan
     url: "/api/conversations/direct",
     headers: { cookie },
     payload: { participantId },
+  });
+}
+
+async function createGroupConversation(
+  app: TestApp,
+  cookie: string,
+  name: string,
+  participantIds: string[],
+) {
+  return app.inject({
+    method: "POST",
+    url: "/api/conversations/groups",
+    headers: { cookie },
+    payload: { name, participantIds },
+  });
+}
+
+async function updateGroupParticipants(
+  app: TestApp,
+  cookie: string,
+  conversationId: string,
+  participantIds: string[],
+) {
+  return app.inject({
+    method: "PATCH",
+    url: `/api/conversations/${conversationId}/participants`,
+    headers: { cookie },
+    payload: { participantIds },
   });
 }
 
@@ -294,6 +325,131 @@ describe("Peerly messaging API", () => {
     });
     expect(messagesResponse.statusCode).toBe(200);
     expect(messagesResponse.json<{ items: MessageBody["message"][] }>().items).toHaveLength(2);
+  });
+
+  it("创建者和管理员可以管理群成员，被移除成员立即失去访问权限", async () => {
+    const app = await makeApp();
+    const team = await bootstrapTeam(app);
+
+    const createdResponse = await createGroupConversation(app, team.bobCookie, "产品讨论", [
+      team.alice.id,
+      team.charlie.id,
+    ]);
+    expect(createdResponse.statusCode).toBe(201);
+    const group = createdResponse.json<ConversationBody>().conversation;
+    expect(group).toMatchObject({
+      type: "group",
+      name: "产品讨论",
+      createdBy: team.bob.id,
+    });
+    expect(group.participantIds).toEqual(
+      expect.arrayContaining([team.alice.id, team.bob.id, team.charlie.id]),
+    );
+
+    const forbidden = await updateGroupParticipants(app, team.charlieCookie, group.id, [
+      team.alice.id,
+      team.bob.id,
+    ]);
+    expect(forbidden.statusCode).toBe(403);
+
+    const updatedResponse = await updateGroupParticipants(app, team.aliceCookie, group.id, [
+      team.alice.id,
+      team.bob.id,
+    ]);
+    expect(updatedResponse.statusCode).toBe(200);
+    expect(updatedResponse.json<ConversationBody>().conversation.participantIds).toEqual(
+      expect.arrayContaining([team.alice.id, team.bob.id]),
+    );
+
+    const removedMemberRead = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie: team.charlieCookie },
+    });
+    expect(removedMemberRead.statusCode).toBe(403);
+
+    const creatorRemoval = await updateGroupParticipants(app, team.aliceCookie, group.id, [
+      team.alice.id,
+      team.charlie.id,
+    ]);
+    expect(creatorRemoval.statusCode).toBe(400);
+  });
+
+  it("群聊消息保存结构化 mention，并拒绝群外或名称不匹配的目标", async () => {
+    const app = await makeApp();
+    const team = await bootstrapTeam(app);
+    const groupResponse = await createGroupConversation(app, team.aliceCookie, "项目群", [
+      team.bob.id,
+    ]);
+    const group = groupResponse.json<ConversationBody>().conversation;
+
+    const mentioned = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie: team.aliceCookie },
+      payload: {
+        clientMessageId: "mention-bob",
+        content: {
+          type: "text",
+          text: "@Bob 请看一下",
+          mentions: [{ principalId: team.bob.id, displayName: "Bob" }],
+        },
+      },
+    });
+    expect(mentioned.statusCode).toBe(201);
+    expect(mentioned.json<MessageBody>().message.content).toEqual({
+      type: "text",
+      text: "@Bob 请看一下",
+      mentions: [{ principalId: team.bob.id, displayName: "Bob" }],
+    });
+
+    const idempotentRetry = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie: team.aliceCookie },
+      payload: {
+        clientMessageId: "mention-bob",
+        content: {
+          type: "text",
+          text: "这次重试的请求体不会覆盖已保存消息",
+          mentions: [{ principalId: team.charlie.id, displayName: "Charlie" }],
+        },
+      },
+    });
+    expect(idempotentRetry.statusCode).toBe(200);
+    expect(idempotentRetry.json<MessageBody>().message.id).toBe(
+      mentioned.json<MessageBody>().message.id,
+    );
+
+    const outsiderMention = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie: team.aliceCookie },
+      payload: {
+        clientMessageId: "mention-charlie",
+        content: {
+          type: "text",
+          text: "@Charlie 请看一下",
+          mentions: [{ principalId: team.charlie.id, displayName: "Charlie" }],
+        },
+      },
+    });
+    expect(outsiderMention.statusCode).toBe(400);
+
+    const spoofedName = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie: team.aliceCookie },
+      payload: {
+        clientMessageId: "spoofed-bob",
+        content: {
+          type: "text",
+          text: "@NotBob 请看一下",
+          mentions: [{ principalId: team.bob.id, displayName: "NotBob" }],
+        },
+      },
+    });
+    expect(spoofedName.statusCode).toBe(400);
   });
 
   it("pages backward through messages using stable sequence cursors", async () => {

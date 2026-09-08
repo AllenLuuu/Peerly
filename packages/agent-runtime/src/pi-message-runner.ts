@@ -105,7 +105,7 @@ export class PiMessageRunner {
       if (replyCount === 0) {
         throw new AgentRuntimeOperationError(
           "REPLY_REQUIRED",
-          "The Agent did not call reply for a direct message",
+          "The Agent did not call reply for a message that requires a reply",
         );
       }
       return replyCount;

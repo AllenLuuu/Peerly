@@ -4,12 +4,14 @@ import type {
   AgentPrincipal,
   Conversation,
   CreateAgentPrincipalInput,
+  CreateGroupConversationInput,
   CreateHumanInput,
   HumanPrincipal,
   Message,
   MessagePage,
   Principal,
   SendMessageInput,
+  UpdateGroupParticipantsInput,
 } from "@peerly/contracts";
 import type {
   DeliverAgentMessageInput,
@@ -27,6 +29,11 @@ interface Created<T> {
 }
 
 interface Delivered<T> extends Created<T> {
+  recipientIds: string[];
+}
+
+interface Updated<T> {
+  value: T;
   recipientIds: string[];
 }
 
@@ -188,6 +195,73 @@ export class PeerlyService {
     });
   }
 
+  async createGroupConversation(
+    actorId: string | undefined,
+    input: CreateGroupConversationInput,
+  ): Promise<Conversation> {
+    return this.#mutate(async () => {
+      const state = this.#repository.readState();
+      const actor = this.#requireActor(state, actorId);
+      const participantIds = [...new Set([actor.id, ...input.participantIds])];
+      if (participantIds.length < 2) {
+        throw new PeerlyError("INVALID_OPERATION", "A group requires at least two members", 400);
+      }
+      for (const principalId of participantIds) this.#findActivePrincipal(state, principalId);
+
+      const timestamp = this.#now();
+      const conversation: Conversation = {
+        id: this.#generateId("conversation"),
+        type: "group",
+        name: input.name,
+        participantIds,
+        createdBy: actor.id,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.conversations.push(conversation);
+      await this.#repository.saveState(state);
+      return conversation;
+    });
+  }
+
+  async updateGroupParticipants(
+    actorId: string | undefined,
+    conversationId: string,
+    input: UpdateGroupParticipantsInput,
+  ): Promise<Updated<Conversation>> {
+    return this.#mutate(async () => {
+      const state = this.#repository.readState();
+      const actor = this.#requireActor(state, actorId);
+      const conversation = this.#requireConversation(state, conversationId);
+      if (conversation.type !== "group") {
+        throw new PeerlyError("INVALID_OPERATION", "Only groups have managed participants", 400);
+      }
+      const administrator = actor.type === "human" && actor.role === "admin";
+      if (!administrator && conversation.createdBy !== actor.id) {
+        throw new PeerlyError(
+          "FORBIDDEN",
+          "Only the group creator or an administrator can manage members",
+          403,
+        );
+      }
+      if (!input.participantIds.includes(conversation.createdBy)) {
+        throw new PeerlyError("INVALID_OPERATION", "The group creator cannot be removed", 400);
+      }
+      for (const principalId of input.participantIds) {
+        this.#findActivePrincipal(state, principalId);
+      }
+
+      const previousParticipantIds = conversation.participantIds;
+      conversation.participantIds = [...input.participantIds];
+      conversation.updatedAt = this.#now();
+      await this.#repository.saveState(state);
+      return {
+        value: conversation,
+        recipientIds: [...new Set([...previousParticipantIds, ...conversation.participantIds])],
+      };
+    });
+  }
+
   listConversations(actorId?: string): Conversation[] {
     const state = this.#repository.readState();
     const actor = this.#requireActor(state, actorId);
@@ -219,6 +293,7 @@ export class PeerlyService {
           recipientIds: [...conversation.participantIds],
         };
       }
+      this.#validateMentions(state, conversation, input);
 
       const timestamp = this.#now();
       const previousMessage = messages.at(-1);
@@ -265,11 +340,18 @@ export class PeerlyService {
     };
   }
 
-  prepareAgentDeliveries(message: Message): PreparedAgentDelivery[] {
+  async prepareAgentDeliveries(message: Message): Promise<PreparedAgentDelivery[]> {
     const state = this.#repository.readState();
     const conversation = this.#requireConversation(state, message.conversationId);
     const sender = state.principals.find((principal) => principal.id === message.senderId);
     if (!sender) throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Message sender not found", 404);
+
+    const messages =
+      conversation.type === "group"
+        ? (await this.#repository.readMessages(conversation.id))
+            .filter((candidate) => candidate.sequence <= message.sequence)
+            .slice(-20)
+        : [message];
 
     return conversation.participantIds.flatMap((principalId) => {
       const principal = state.principals.find((candidate) => candidate.id === principalId);
@@ -287,15 +369,26 @@ export class PeerlyService {
           input: {
             deliveryId: `delivery_${message.id}_${principal.id}`,
             agentId: principal.runtimeAgentId,
+            agentPrincipalId: principal.id,
             conversation: { id: conversation.id, type: conversation.type },
-            messages: [
-              {
-                id: message.id,
-                sender: { id: sender.id, type: sender.type, name: sender.displayName },
-                createdAt: message.createdAt,
-                content: message.content,
-              },
-            ],
+            messages: messages.map((contextMessage) => {
+              const contextSender = state.principals.find(
+                (candidate) => candidate.id === contextMessage.senderId,
+              );
+              if (!contextSender) {
+                throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Message sender not found", 404);
+              }
+              return {
+                id: contextMessage.id,
+                sender: {
+                  id: contextSender.id,
+                  type: contextSender.type,
+                  name: contextSender.displayName,
+                },
+                createdAt: contextMessage.createdAt,
+                content: contextMessage.content,
+              };
+            }),
           },
         },
       ];
@@ -365,6 +458,25 @@ export class PeerlyService {
   #requireParticipant(conversation: Conversation, principalId: string): void {
     if (!conversation.participantIds.includes(principalId)) {
       throw new PeerlyError("FORBIDDEN", "Conversation membership is required", 403);
+    }
+  }
+
+  #validateMentions(state: PeerlyState, conversation: Conversation, input: SendMessageInput): void {
+    for (const mention of input.content.mentions ?? []) {
+      const target = this.#findActivePrincipal(state, mention.principalId);
+      if (!conversation.participantIds.includes(target.id)) {
+        throw new PeerlyError(
+          "INVALID_OPERATION",
+          "Mention target must belong to the conversation",
+          400,
+        );
+      }
+      if (target.displayName !== mention.displayName) {
+        throw new PeerlyError("INVALID_OPERATION", "Mention display name does not match", 400);
+      }
+      if (!input.content.text.includes(`@${mention.displayName}`)) {
+        throw new PeerlyError("INVALID_OPERATION", "Message text must include the mention", 400);
+      }
     }
   }
 

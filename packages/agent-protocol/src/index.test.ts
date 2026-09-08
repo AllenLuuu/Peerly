@@ -4,6 +4,7 @@ import {
   agentRuntimeEventSchema,
   agentRuntimeErrorSchema,
   createAgentInputSchema,
+  deliverAgentMessageInputSchema,
   runtimeAgentDefinitionSchema,
   runtimeAgentListSchema,
   updateAgentInputSchema,
@@ -86,16 +87,40 @@ describe("shared response schemas", () => {
         },
         { type: "run_completed", timestamp, replyCount: 1 },
         { type: "run_cancelled", timestamp },
+        { type: "delivery_skipped", timestamp, reason: "not_mentioned" },
         {
           type: "run_failed",
           timestamp,
           error: { code: "PROVIDER_ERROR", message: "Unavailable" },
         },
       ].map((event) => agentRuntimeEventSchema.parse(event)),
-    ).toHaveLength(9);
+    ).toHaveLength(10);
     expect(
       agentRuntimeEventSchema.safeParse({ type: "thinking_delta", timestamp, delta: "" }).success,
     ).toBe(false);
+  });
+
+  it("接受带结构化 mention 的群聊投递", () => {
+    expect(
+      deliverAgentMessageInputSchema.parse({
+        deliveryId: "delivery-1",
+        agentId: "runtime-emily",
+        agentPrincipalId: "agent-emily",
+        conversation: { id: "conversation-product", type: "group" },
+        messages: [
+          {
+            id: "message-1",
+            sender: { id: "human-alice", type: "human", name: "Alice" },
+            createdAt: "2026-09-08T10:00:00.000Z",
+            content: {
+              type: "text",
+              text: "@Emily 请总结",
+              mentions: [{ principalId: "agent-emily", displayName: "Emily" }],
+            },
+          },
+        ],
+      }),
+    ).toMatchObject({ conversation: { type: "group" }, agentPrincipalId: "agent-emily" });
   });
 });
 

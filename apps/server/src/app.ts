@@ -3,10 +3,12 @@ import {
   conversationIdSchema,
   createAgentPrincipalInputSchema,
   createDirectConversationInputSchema,
+  createGroupConversationInputSchema,
   createHumanInputSchema,
   listMessagesQuerySchema,
   selectDevSessionInputSchema,
   sendMessageInputSchema,
+  updateGroupParticipantsInputSchema,
 } from "@peerly/contracts";
 import type { AgentHost, AgentRuntime } from "@peerly/agent-protocol";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
@@ -127,6 +129,28 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
       );
     }
     return reply.status(result.created ? 201 : 200).send({ conversation: result.value });
+  });
+
+  app.post("/api/conversations/groups", async (request, reply) => {
+    const input = createGroupConversationInputSchema.parse(request.body);
+    const conversation = await service.createGroupConversation(actorIdFrom(request), input);
+    realtime.publish({ type: "conversation.created", conversation }, conversation.participantIds);
+    return reply.status(201).send({ conversation });
+  });
+
+  app.patch("/api/conversations/:conversationId/participants", async (request) => {
+    const { conversationId } = conversationParamsSchema.parse(request.params);
+    const input = updateGroupParticipantsInputSchema.parse(request.body);
+    const result = await service.updateGroupParticipants(
+      actorIdFrom(request),
+      conversationId,
+      input,
+    );
+    realtime.publish(
+      { type: "conversation.updated", conversation: result.value },
+      result.recipientIds,
+    );
+    return { conversation: result.value };
   });
 
   app.get("/api/conversations", async (request) => ({

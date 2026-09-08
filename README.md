@@ -33,7 +33,7 @@ pnpm build
 pnpm dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent，并与任一成员发起私聊。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
+浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent。成员既可以发起私聊，也可以创建包含人类和 Agent 的群聊；群聊中只有结构化 `@Agent` 才会触发 Agent 回复。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
 
 ## Peerly 后端
 
@@ -57,13 +57,13 @@ pnpm runtime:cli
 
 如果使用 OpenAI-compatible 接口，需要设置 `PEERLY_MODEL_PROVIDER=openai-compatible`、`PEERLY_MODEL_ID`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。`PEERLY_OPENAI_API` 可以设为 `chat-completions`（默认值）或 `responses`。
 
-使用本地配置的真实模型执行一次临时数据目录中的完整私聊 smoke test：
+使用本地配置的真实模型执行一次临时数据目录中的完整私聊和群聊 smoke test：
 
 ```sh
 pnpm smoke:agent
 ```
 
-该命令会通过真实 HTTP API 创建管理员、Agent 和私聊，发送消息并等待 `reply` 工具生成的正式回复，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
+该命令会通过真实 HTTP API 创建管理员、Agent、私聊和群聊，验证普通群消息不触发 Agent、结构化 mention 可以触发正式回复，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
 
 Peerly 后端或 Runtime CLI 等调用方负责创建 Runtime，并为每条消息消费一个事件流：
 
@@ -89,6 +89,7 @@ for await (const event of runtime.deliverMessage(
   {
     deliveryId: "delivery-1",
     agentId: agent.id,
+    agentPrincipalId: agent.id,
     conversation: { id: "conversation-1", type: "direct" },
     messages: [
       {
@@ -106,4 +107,4 @@ for await (const event of runtime.deliverMessage(
 await runtime.close();
 ```
 
-Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session。同一映射中的消息按 FIFO 顺序执行，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Provider 凭证不会写入 Agent Definition。
+Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session。同一映射中的消息按 FIFO 顺序执行，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。私聊和群聊 mention 会调用模型；没有 mention 当前 Agent 的普通群消息返回 `delivery_skipped`。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Provider 凭证不会写入 Agent Definition。

@@ -24,7 +24,7 @@ runtime-cli --------------------> agent-runtime <---- server
 
 CLI 只调用 Runtime 公开接口，不导入它的存储实现。后续接入 Agent 会话时，后端也会使用相同的模块边界。MVP 的 Runtime 实现明确以 Pi 为基础，不为尚未确定的其他 Runtime 提前设计抽象。
 
-每次投递消息都会返回一个热启动、带缓冲、只允许一个消费者的事件流。事件流报告排队、开始、可观测工作过程、工具调用、正式回复和一个终态事件。同一 `(Agent, Conversation)` 的调用按 FIFO 顺序执行，不同 Conversation 可以并行。取消操作通过 `AbortSignal` 作用于当前调用，Runtime 不提供全局运行查询或取消 API。
+每次投递消息都会返回一个热启动、带缓冲、只允许一个消费者的事件流。需要运行模型时，事件流报告排队、开始、可观测工作过程、工具调用、正式回复和一个终态事件；没有 mention 当前 Agent 的普通群消息只返回 `delivery_skipped`。同一 `(Agent, Conversation)` 的调用按 FIFO 顺序执行，不同 Conversation 可以并行。取消操作通过 `AbortSignal` 作用于当前调用，Runtime 不提供全局运行查询或取消 API。
 
 ### Agent Runtime 内部结构
 
@@ -46,7 +46,7 @@ flowchart TD
 
 `PiAgentRuntime` 是公开 API 门面和参数校验边界。`AgentRunCoordinator` 只负责按 `(Agent, Conversation)` 调度、取消和事件生命周期。当排队请求真正开始执行时，`PiMessageRunner` 读取当前 Agent Definition，通过 `ConversationSessionIndex` 懒创建或恢复对应 Pi session，然后执行 Pi turn。
 
-Runtime 为所有 Agent 注入 Peerly 平台默认 Prompt，并在其后追加 Agent Definition 中的个性化 instructions。模型看到的每轮输入只有精简的 `conversation + messages` JSON；平台内部的 Conversation ID、消息 ID 和投递 ID 不会暴露给模型。模型普通输出只作为 Thinking 活动，只有调用 `reply` 工具传入的文本才会经 `AgentHost` 返回平台并成为正式消息。私聊必须回复；首次未调用工具时 Runtime 会再尝试一次，仍未回复则返回 `REPLY_REQUIRED`。
+Runtime 为所有 Agent 注入 Peerly 平台默认 Prompt，并在其后追加 Agent Definition 中的个性化 instructions。模型看到的每轮输入只有精简的 `conversation + messages` JSON；平台内部的 Conversation ID、消息 ID 和投递 ID 不会暴露给模型。模型普通输出只作为 Thinking 活动，只有调用 `reply` 工具传入的文本才会经 `AgentHost` 返回平台并成为正式消息。私聊和显式 mention 当前 Agent 的群聊消息必须回复；首次未调用工具时 Runtime 会再尝试一次，仍未回复则返回 `REPLY_REQUIRED`。普通群消息由 Runtime 在调用 Pi 前跳过。
 
 ### Peerly 后端内部结构
 
@@ -72,9 +72,9 @@ flowchart TD
 
 Human 和 Agent 共用 `Principal` 可辨识联合类型，以及同一套 Conversation、权限和消息流程。Human 的 HTTP 请求通过 cookie 获得当前操作主体。Agent 的 `reply` 工具最终也使用同一个消息应用服务，不建立第二套消息实现。
 
-后端在公开消息落盘后把消息投递给 Conversation 中的 Agent。`AgentMessageDispatcher` 只翻译消息、消费 Runtime 事件流并把 `AbortController` 暴露为独立取消接口，不管理 Pi session、队列或回复决策。`AgentHost` 在 Runtime 调用 `reply` 时校验 Agent 身份和 Conversation 成员关系，使用幂等客户端消息 ID 调用 `PeerlyService.sendMessage()`，成功落盘后再发布 `message.created`。
+后端在公开消息落盘后把消息投递给 Conversation 中的 Agent。群聊投递包含最近最多 20 条公开消息和结构化 mentions，由 Runtime 决定是否调用 Pi。`AgentMessageDispatcher` 只翻译消息、消费 Runtime 事件流并把 `AbortController` 暴露为独立取消接口，不管理 Pi session、队列或回复决策。`AgentHost` 在 Runtime 调用 `reply` 时校验 Agent 身份和 Conversation 成员关系，使用幂等客户端消息 ID 调用 `PeerlyService.sendMessage()`，成功落盘后再发布 `message.created`。Agent 正式回复当前不会触发其他 Agent，从而避免自动回复循环。
 
-Web 使用 HTTP 加载权威状态并发送消息。Socket.IO 只通知在线客户端发生了 `conversation.created` 或 `message.created`，不承担写入职责。服务端只有在文件写入和权限检查成功后才广播事件，并按 Principal 房间只投递给 Conversation 参与者。客户端断线重连后重新通过 HTTP 同步，因此实时事件可以保持轻量的尽力投递语义。
+Web 使用 HTTP 加载权威状态并发送消息。Socket.IO 只通知在线客户端发生了 `conversation.created`、`conversation.updated` 或 `message.created`，不承担写入职责。服务端只有在文件写入和权限检查成功后才广播事件，并按 Principal 房间只投递给 Conversation 参与者。客户端断线重连后重新通过 HTTP 同步，因此实时事件可以保持轻量的尽力投递语义。
 
 ## 数据归属
 

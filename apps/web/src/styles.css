@@ -289,6 +289,18 @@ textarea:focus {
   font-size: 15px;
 }
 
+.heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.heading-actions .icon-button {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .count,
 .self-badge {
   border-radius: 99px;
@@ -418,6 +430,10 @@ textarea:focus {
   border-bottom: 1px solid #e3e7e5;
 }
 
+.manage-group-button {
+  margin-left: auto;
+}
+
 .chat-header h2,
 .chat-header p {
   margin: 0;
@@ -485,6 +501,120 @@ textarea:focus {
   grid-template-columns: 1fr auto;
   gap: 10px;
   border-top: 1px solid #e3e7e5;
+}
+
+.mention-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.mention-button {
+  padding: 5px 9px;
+  border: 1px solid #c9d4cf;
+  border-radius: 999px;
+  background: #f4f7f5;
+  color: #416155;
+  font-size: 12px;
+}
+
+.mention-button.selected {
+  border-color: #286b55;
+  background: #dcebe5;
+  color: #1e5a46;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(27, 39, 35, 0.38);
+}
+
+.group-dialog {
+  width: min(440px, calc(100vw - 40px));
+  max-height: calc(100vh - 60px);
+  padding: 22px;
+  overflow-y: auto;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(29, 47, 40, 0.22);
+}
+
+.dialog-heading,
+.dialog-actions,
+.participant-option {
+  display: flex;
+  align-items: center;
+}
+
+.dialog-heading {
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.dialog-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.group-dialog > label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.group-dialog fieldset {
+  margin: 18px 0;
+  padding: 8px;
+  border: 1px solid #e0e6e3;
+  border-radius: 10px;
+}
+
+.group-dialog legend {
+  padding: 0 5px;
+  color: #64716c;
+  font-size: 12px;
+}
+
+.participant-option {
+  gap: 9px;
+  padding: 8px;
+}
+
+.participant-option input {
+  width: auto;
+}
+
+.participant-option span {
+  flex: 1;
+}
+
+.participant-option small {
+  color: #7b8682;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-actions button {
+  padding: 8px 13px;
+  border: 1px solid #286b55;
+  border-radius: 8px;
+  background: #286b55;
+  color: #fff;
+}
+
+.dialog-actions .quiet-button {
+  border-color: #ccd5d1;
+  background: #fff;
+  color: #345f50;
 }
 
 .composer button {

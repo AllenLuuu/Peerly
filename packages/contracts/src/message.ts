@@ -10,12 +10,26 @@ export const messageIdSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
+export const mentionSchema = z.strictObject({
+  principalId: principalIdSchema,
+  displayName: z.string().trim().min(1).max(128),
+});
+
+const mentionsSchema = z
+  .array(mentionSchema)
+  .max(50)
+  .refine(
+    (mentions) => new Set(mentions.map((mention) => mention.principalId)).size === mentions.length,
+    "Mention targets must be unique",
+  );
+
 export const textMessageContentSchema = z.strictObject({
   type: z.literal("text"),
   text: z
     .string()
     .max(20_000)
     .refine((text) => text.trim().length > 0, "Message text must not be empty"),
+  mentions: mentionsSchema.optional(),
 });
 
 export const messageContentSchema = z.discriminatedUnion("type", [textMessageContentSchema]);
@@ -46,6 +60,7 @@ export const messagePageSchema = z.strictObject({
 });
 
 export type MessageContent = z.infer<typeof messageContentSchema>;
+export type Mention = z.infer<typeof mentionSchema>;
 export type Message = z.infer<typeof messageSchema>;
 export type SendMessageInput = z.infer<typeof sendMessageInputSchema>;
 export type MessagePage = z.infer<typeof messagePageSchema>;

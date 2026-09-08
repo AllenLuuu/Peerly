@@ -166,6 +166,35 @@ describe("Peerly 消息投递", () => {
       error: { code: "REPLY_REQUIRED" },
     });
   });
+
+  it("群聊普通消息不调用模型，被明确 mention 时必须回复", async () => {
+    const dataDirectory = await makeDataDirectory();
+    const { faux, models } = makeFauxModels();
+    faux.setResponses([replyResponse("群聊回复")]);
+    const host = successfulHost();
+    const runtime = await makeRuntime(dataDirectory, models, host);
+    await createAgent(runtime);
+
+    const skipped = await collect(runtime.deliverMessage(groupDelivery(false)));
+    expect(skipped).toEqual([
+      expect.objectContaining({ type: "delivery_skipped", reason: "not_mentioned" }),
+    ]);
+    expect(faux.state.callCount).toBe(0);
+
+    const mentionedOtherAgent = await collect(
+      runtime.deliverMessage(groupDelivery(true, "agent-other")),
+    );
+    expect(mentionedOtherAgent.at(-1)).toMatchObject({
+      type: "delivery_skipped",
+      reason: "not_mentioned",
+    });
+    expect(faux.state.callCount).toBe(0);
+
+    const events = await collect(runtime.deliverMessage(groupDelivery(true)));
+    expect(faux.state.callCount).toBe(1);
+    expect(host.publishReply).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toMatchObject({ type: "run_completed", replyCount: 1 });
+  });
 });
 
 function directDelivery(
@@ -179,6 +208,7 @@ function directDelivery(
   return {
     deliveryId: overrides.deliveryId ?? "delivery-1",
     agentId: "assistant",
+    agentPrincipalId: "agent-assistant",
     conversation: {
       id: overrides.conversationId ?? "conversation-1",
       type: "direct",
@@ -189,6 +219,34 @@ function directDelivery(
         sender: { id: "human-alice", type: "human", name: "Alice" },
         createdAt: "2026-09-08T10:30:00.000Z",
         content: { type: "text", text },
+      },
+    ],
+  };
+}
+
+function groupDelivery(
+  mentioned: boolean,
+  mentionedPrincipalId = "agent-assistant",
+): DeliverAgentMessageInput {
+  return {
+    deliveryId: mentioned ? "delivery-group-mentioned" : "delivery-group-ordinary",
+    agentId: "assistant",
+    agentPrincipalId: "agent-assistant",
+    conversation: { id: "conversation-group", type: "group" },
+    messages: [
+      {
+        id: mentioned ? "message-mentioned" : "message-ordinary",
+        sender: { id: "human-alice", type: "human", name: "Alice" },
+        createdAt: "2026-09-08T10:30:00.000Z",
+        content: {
+          type: "text",
+          text: mentioned ? "@Assistant 请总结" : "大家先看看材料",
+          ...(mentioned
+            ? {
+                mentions: [{ principalId: mentionedPrincipalId, displayName: "Assistant" }],
+              }
+            : {}),
+        },
       },
     ],
   };

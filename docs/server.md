@@ -1,6 +1,6 @@
 # Peerly 后端使用说明
 
-后端提供本地组织、统一 Principal、单聊 Conversation、公开聊天消息和 Socket.IO 实时通知，并通过 TypeScript 模块接口接入 Agent Runtime。
+后端提供本地组织、统一 Principal、私聊与群聊 Conversation、公开聊天消息和 Socket.IO 实时通知，并通过 TypeScript 模块接口接入 Agent Runtime。
 
 ## 启动后端
 
@@ -107,13 +107,48 @@ curl -b alice.cookies -X POST \
   http://127.0.0.1:3000/api/agent-deliveries/<delivery-id>/cancel
 ```
 
+## 群聊流程
+
+创建群聊时，当前成员会自动加入，因此请求只需要列出其他参与者：
+
+```sh
+curl -b alice.cookies -X POST http://127.0.0.1:3000/api/conversations/groups \
+  -H "Content-Type: application/json" \
+  -d '{"name":"产品讨论","participantIds":["<bob-id>","<agent-id>"]}'
+```
+
+群聊创建者或组织管理员可以用完整成员列表更新群成员：
+
+```sh
+curl -b alice.cookies -X PATCH \
+  http://127.0.0.1:3000/api/conversations/<conversation-id>/participants \
+  -H "Content-Type: application/json" \
+  -d '{"participantIds":["<alice-id>","<agent-id>"]}'
+```
+
+群聊 mention 同时保存可读文本和结构化目标：
+
+```json
+{
+  "clientMessageId": "alice-group-001",
+  "content": {
+    "type": "text",
+    "text": "@Researcher 请总结讨论",
+    "mentions": [{ "principalId": "<agent-id>", "displayName": "Researcher" }]
+  }
+}
+```
+
+后端会验证目标属于当前 Conversation、处于 active 状态、名称与 Principal 一致，并且文本中确实包含对应的 `@名称`。群消息会同步给所有群内 Agent；Runtime 只为被 mention 的 Agent 调用模型。触发投递包含最近最多 20 条公开消息。
+
 ## 实时通知
 
 Socket.IO 与 HTTP 共用 `peerly_session` Cookie。连接建立时后端验证 Human 身份，并将连接加入对应 Principal 的定向房间。
 
 服务端事件统一通过 `peerly.event` 发送：
 
-- `conversation.created`：当前成员收到一个新私聊 Conversation。
+- `conversation.created`：当前成员收到一个新私聊或群聊 Conversation。
+- `conversation.updated`：群成员发生变化。
 - `message.created`：当前成员参与的 Conversation 中写入了一条新消息。
 - `agent.activity`：Agent 的排队、开始、Thinking 增量、工具调用、完成、取消或失败状态。
 

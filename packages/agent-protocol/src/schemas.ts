@@ -51,15 +51,24 @@ export const runtimeMessageSchema = z.strictObject({
     text: z.string().refine((text) => text.trim().length > 0, {
       message: "Message content must not be empty",
     }),
+    mentions: z
+      .array(
+        z.strictObject({
+          principalId: nonEmptyString,
+          displayName: nonEmptyString,
+        }),
+      )
+      .optional(),
   }),
 });
 
 export const deliverAgentMessageInputSchema = z.strictObject({
   deliveryId: nonEmptyString,
   agentId: agentIdSchema,
+  agentPrincipalId: nonEmptyString,
   conversation: z.strictObject({
     id: nonEmptyString,
-    type: z.literal("direct"),
+    type: z.enum(["direct", "group"]),
   }),
   messages: z.array(runtimeMessageSchema).min(1),
 });
@@ -127,6 +136,11 @@ export const runCancelledEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("run_cancelled"),
 });
 
+export const deliverySkippedEventSchema = agentRuntimeEventBaseSchema.extend({
+  type: z.literal("delivery_skipped"),
+  reason: z.literal("not_mentioned"),
+});
+
 export const runFailedEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("run_failed"),
   error: agentRuntimeErrorSchema,
@@ -141,6 +155,7 @@ export const agentRuntimeEventSchema = z.discriminatedUnion("type", [
   replyPublishedEventSchema,
   runCompletedEventSchema,
   runCancelledEventSchema,
+  deliverySkippedEventSchema,
   runFailedEventSchema,
 ]);
 

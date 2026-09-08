@@ -51,6 +51,7 @@ export async function runRuntimeCli({ runtime, terminal }: RunRuntimeCliOptions)
           {
             deliveryId: `cli-delivery-${randomUUID()}`,
             agentId: agent.id,
+            agentPrincipalId: agent.id,
             conversation: { id: conversationId, type: "direct" },
             messages: [
               {

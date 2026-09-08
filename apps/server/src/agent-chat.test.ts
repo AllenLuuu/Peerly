@@ -9,6 +9,7 @@ import type {
   CreateAgentInput,
   DeliverAgentMessageInput,
   DeliverMessageOptions,
+  PublishAgentReplyInput,
   RuntimeAgentDefinition,
 } from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -177,6 +178,134 @@ describe("平台内私聊 Agent", () => {
     expect(cancelResponse.statusCode).toBe(202);
     await waitFor(() => runtime.wasCancelled);
   });
+
+  it("群聊同步给所有 Agent，只有被 mention 的 Agent 回复并收到最近消息", async () => {
+    const runtime = new FakeAgentRuntime();
+    const app = await makeApp(runtime);
+    const { alice, cookie } = await bootstrapAdministrator(app);
+    const emily = await createAgent(app, cookie, "Emily");
+    const researcher = await createAgent(app, cookie, "Researcher");
+    const groupResponse = await app.inject({
+      method: "POST",
+      url: "/api/conversations/groups",
+      headers: { cookie },
+      payload: { name: "产品讨论", participantIds: [emily.id, researcher.id] },
+    });
+    const group = groupResponse.json<{ conversation: { id: string } }>().conversation;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: "ordinary",
+        content: { type: "text", text: "大家先阅读材料" },
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: "mention-both",
+        content: {
+          type: "text",
+          text: "@Emily @Researcher 分别给出建议",
+          mentions: [
+            { principalId: emily.id, displayName: "Emily" },
+            { principalId: researcher.id, displayName: "Researcher" },
+          ],
+        },
+      },
+    });
+    await waitFor(() => runtime.deliverMessage.mock.calls.length === 4);
+    await waitFor(() => runtime.publishedReplies.length === 2);
+
+    const mentionedDeliveries = runtime.deliverMessage.mock.calls.slice(-2).map(([input]) => input);
+    expect(mentionedDeliveries.map((input) => input.agentPrincipalId)).toEqual(
+      expect.arrayContaining([emily.id, researcher.id]),
+    );
+    expect(mentionedDeliveries.every((input) => input.messages.length === 2)).toBe(true);
+
+    await waitFor(async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/conversations/${group.id}/messages`,
+        headers: { cookie },
+      });
+      return response.json<{ items: unknown[] }>().items.length === 4;
+    });
+    const messagesResponse = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie },
+    });
+    const messages = messagesResponse.json<{
+      items: Array<{ senderId: string; content: { text: string } }>;
+    }>().items;
+    expect(messages).toHaveLength(4);
+    expect(messages.map((message) => message.senderId)).toEqual(
+      expect.arrayContaining([alice.id, emily.id, researcher.id]),
+    );
+
+    const removeResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/conversations/${group.id}/participants`,
+      headers: { cookie },
+      payload: { participantIds: [alice.id, emily.id] },
+    });
+    expect(removeResponse.statusCode).toBe(200);
+    const callsBeforeRejectedMention = runtime.deliverMessage.mock.calls.length;
+    const rejectedMention = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: "mention-removed",
+        content: {
+          type: "text",
+          text: "@Researcher 你再看看",
+          mentions: [{ principalId: researcher.id, displayName: "Researcher" }],
+        },
+      },
+    });
+    expect(rejectedMention.statusCode).toBe(400);
+    expect(runtime.deliverMessage).toHaveBeenCalledTimes(callsBeforeRejectedMention);
+
+    for (let index = 1; index <= 21; index += 1) {
+      await app.inject({
+        method: "POST",
+        url: `/api/conversations/${group.id}/messages`,
+        headers: { cookie },
+        payload: {
+          clientMessageId: `context-${index}`,
+          content: { type: "text", text: `背景消息 ${index}` },
+        },
+      });
+    }
+    await waitFor(
+      () => runtime.deliverMessage.mock.calls.length === callsBeforeRejectedMention + 21,
+    );
+    await app.inject({
+      method: "POST",
+      url: `/api/conversations/${group.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: "mention-with-context",
+        content: {
+          type: "text",
+          text: "@Emily 总结最近讨论",
+          mentions: [{ principalId: emily.id, displayName: "Emily" }],
+        },
+      },
+    });
+    await waitFor(
+      () => runtime.deliverMessage.mock.calls.length === callsBeforeRejectedMention + 22,
+    );
+    const contextDelivery = runtime.deliverMessage.mock.calls.at(-1)?.[0];
+    expect(contextDelivery?.messages).toHaveLength(20);
+    expect(contextDelivery?.messages.at(-1)?.content.text).toBe("@Emily 总结最近讨论");
+  });
 });
 
 interface AgentBody {
@@ -190,7 +319,7 @@ interface AgentBody {
 class FakeAgentRuntime implements AgentRuntime {
   readonly createAgent = vi.fn(
     async (input: CreateAgentInput): Promise<RuntimeAgentDefinition> => ({
-      id: "runtime-researcher",
+      id: `runtime-${input.name.toLowerCase()}`,
       name: input.name,
       instructions: input.instructions,
       model: input.model ?? { provider: "faux", modelId: "chat-model" },
@@ -203,11 +332,22 @@ class FakeAgentRuntime implements AgentRuntime {
     (input: DeliverAgentMessageInput, options: DeliverMessageOptions = {}) => {
       this.lastDelivery = input;
       const host = this.host;
+      const publishedReplies = this.publishedReplies;
       const waitForCancellation = this.options.waitForCancellation;
       const markCancelled = (cancelled: boolean) => {
         this.wasCancelled = cancelled;
       };
       return (async function* (): AgentRuntimeEventStream {
+        const trigger = input.messages.at(-1);
+        if (
+          input.conversation.type === "group" &&
+          !trigger?.content.mentions?.some(
+            (mention) => mention.principalId === input.agentPrincipalId,
+          )
+        ) {
+          yield { type: "delivery_skipped", timestamp: now(), reason: "not_mentioned" };
+          return;
+        }
         yield { type: "run_queued", timestamp: now() };
         yield { type: "run_started", timestamp: now() };
         if (waitForCancellation) {
@@ -220,13 +360,15 @@ class FakeAgentRuntime implements AgentRuntime {
           return;
         }
         yield { type: "thinking_delta", timestamp: now(), delta: "不会公开的思考" };
-        const published = await host.publishReply({
+        const replyInput = {
           deliveryId: input.deliveryId,
           runtimeAgentId: input.agentId,
           conversationId: input.conversation.id,
           text: "这是正式回复",
           replyIndex: 0,
-        });
+        } satisfies PublishAgentReplyInput;
+        publishedReplies.push(replyInput);
+        const published = await host.publishReply(replyInput);
         yield {
           type: "reply_published",
           timestamp: now(),
@@ -238,6 +380,7 @@ class FakeAgentRuntime implements AgentRuntime {
     },
   );
   lastDelivery: DeliverAgentMessageInput | undefined;
+  publishedReplies: PublishAgentReplyInput[] = [];
   wasCancelled = false;
   host!: AgentHost;
 
@@ -254,6 +397,21 @@ class FakeAgentRuntime implements AgentRuntime {
   }
   async deleteAgent() {}
   async close() {}
+}
+
+async function createAgent(
+  app: Awaited<ReturnType<typeof createPeerlyApp>>,
+  cookie: string,
+  displayName: string,
+): Promise<AgentBody> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/principals/agents",
+    headers: { cookie },
+    payload: { displayName, instructions: `${displayName} 的设定。` },
+  });
+  expect(response.statusCode).toBe(201);
+  return response.json<{ principal: AgentBody }>().principal;
 }
 
 async function makeApp(runtime: FakeAgentRuntime) {

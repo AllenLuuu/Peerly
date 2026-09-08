@@ -10,6 +10,11 @@ export const conversationCreatedEventSchema = z.strictObject({
   conversation: conversationSchema,
 });
 
+export const conversationUpdatedEventSchema = z.strictObject({
+  type: z.literal("conversation.updated"),
+  conversation: conversationSchema,
+});
+
 export const messageCreatedEventSchema = z.strictObject({
   type: z.literal("message.created"),
   message: messageSchema,
@@ -36,6 +41,11 @@ const agentActivitySchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("run_cancelled"), timestamp }),
   z.strictObject({
+    type: z.literal("delivery_skipped"),
+    timestamp,
+    reason: z.literal("not_mentioned"),
+  }),
+  z.strictObject({
     type: z.literal("run_failed"),
     timestamp,
     error: z.strictObject({ code: z.string().min(1), message: z.string().min(1) }),
@@ -52,6 +62,7 @@ export const agentActivityEventSchema = z.strictObject({
 
 export const peerlyRealtimeEventSchema = z.discriminatedUnion("type", [
   conversationCreatedEventSchema,
+  conversationUpdatedEventSchema,
   messageCreatedEventSchema,
   agentActivityEventSchema,
 ]);

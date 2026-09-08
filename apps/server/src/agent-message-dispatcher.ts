@@ -17,6 +17,7 @@ interface ActiveDelivery {
 
 export class AgentMessageDispatcher {
   readonly #active = new Map<string, ActiveDelivery>();
+  readonly #preparing = new Set<Promise<void>>();
   #closed = false;
 
   constructor(
@@ -27,7 +28,15 @@ export class AgentMessageDispatcher {
 
   dispatch(message: Message): void {
     if (this.#closed) return;
-    for (const delivery of this.peerly.prepareAgentDeliveries(message)) {
+    const task = this.#prepareAndDispatch(message)
+      .catch(() => undefined)
+      .finally(() => this.#preparing.delete(task));
+    this.#preparing.add(task);
+  }
+
+  async #prepareAndDispatch(message: Message): Promise<void> {
+    for (const delivery of await this.peerly.prepareAgentDeliveries(message)) {
+      if (this.#closed) return;
       if (this.#active.has(delivery.input.deliveryId)) continue;
       const controller = new AbortController();
       const task = this.#consume(delivery, controller).finally(() => {
@@ -51,6 +60,7 @@ export class AgentMessageDispatcher {
 
   async close(): Promise<void> {
     this.#closed = true;
+    await Promise.all([...this.#preparing]);
     for (const delivery of this.#active.values()) delivery.controller.abort();
     await Promise.all([...this.#active.values()].map((delivery) => delivery.task));
   }
