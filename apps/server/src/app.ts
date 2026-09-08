@@ -1,16 +1,20 @@
 import cookie from "@fastify/cookie";
 import {
   conversationIdSchema,
+  createAgentPrincipalInputSchema,
   createDirectConversationInputSchema,
   createHumanInputSchema,
   listMessagesQuerySchema,
   selectDevSessionInputSchema,
   sendMessageInputSchema,
 } from "@peerly/contracts";
+import type { AgentHost, AgentRuntime } from "@peerly/agent-protocol";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { ZodError, z } from "zod";
 
 import { PeerlyError } from "./errors.js";
+import { AgentMessageDispatcher, createPeerlyAgentHost } from "./agent-message-dispatcher.js";
+import { AgentProvisioningService } from "./agent-provisioning-service.js";
 import { FilePeerlyRepository } from "./file-peerly-repository.js";
 import { PeerlyService, type PeerlyServiceOptions } from "./peerly-service.js";
 import { attachPeerlyRealtime } from "./realtime.js";
@@ -19,9 +23,13 @@ const sessionCookieName = "peerly_session";
 const conversationParamsSchema = z.strictObject({
   conversationId: conversationIdSchema,
 });
+const deliveryParamsSchema = z.strictObject({
+  deliveryId: z.string().trim().min(1),
+});
 
 export interface CreatePeerlyAppOptions extends PeerlyServiceOptions {
   dataDirectory: string;
+  agentRuntimeFactory?: (host: AgentHost) => Promise<AgentRuntime>;
 }
 
 export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<FastifyInstance> {
@@ -33,6 +41,22 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
   const realtime = attachPeerlyRealtime(app, (principalId) =>
     service.getSessionPrincipal(principalId),
   );
+  const agentRuntime = options.agentRuntimeFactory
+    ? await options.agentRuntimeFactory(createPeerlyAgentHost(service, realtime))
+    : undefined;
+  const agentProvisioning = agentRuntime
+    ? new AgentProvisioningService(service, agentRuntime)
+    : undefined;
+  const agentDispatcher = agentRuntime
+    ? new AgentMessageDispatcher(service, realtime, agentRuntime)
+    : undefined;
+
+  if (agentRuntime && agentDispatcher) {
+    app.addHook("onClose", async () => {
+      await agentDispatcher.close();
+      await agentRuntime.close();
+    });
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -55,6 +79,15 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
   app.post("/api/principals/humans", async (request, reply) => {
     const input = createHumanInputSchema.parse(request.body);
     const principal = await service.createHuman(input, actorIdFrom(request));
+    return reply.status(201).send({ principal });
+  });
+
+  app.post("/api/principals/agents", async (request, reply) => {
+    if (!agentProvisioning) {
+      throw new PeerlyError("AGENT_RUNTIME_UNAVAILABLE", "Agent Runtime is unavailable", 503);
+    }
+    const input = createAgentPrincipalInputSchema.parse(request.body);
+    const principal = await agentProvisioning.create(input, actorIdFrom(request));
     return reply.status(201).send({ principal });
   });
 
@@ -106,6 +139,7 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     const result = await service.sendMessage(actorIdFrom(request), conversationId, input);
     if (result.created) {
       realtime.publish({ type: "message.created", message: result.value }, result.recipientIds);
+      agentDispatcher?.dispatch(result.value);
     }
     return reply.status(result.created ? 201 : 200).send({ message: result.value });
   });
@@ -114,6 +148,17 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     const { conversationId } = conversationParamsSchema.parse(request.params);
     const query = listMessagesQuerySchema.parse(request.query);
     return service.listMessages(actorIdFrom(request), conversationId, query);
+  });
+
+  app.post("/api/agent-deliveries/:deliveryId/cancel", async (request, reply) => {
+    if (!agentDispatcher) {
+      throw new PeerlyError("AGENT_RUNTIME_UNAVAILABLE", "Agent Runtime is unavailable", 503);
+    }
+    const { deliveryId } = deliveryParamsSchema.parse(request.params);
+    if (!agentDispatcher.cancel(deliveryId, actorIdFrom(request))) {
+      throw new PeerlyError("DELIVERY_NOT_FOUND", "Active Agent delivery not found", 404);
+    }
+    return reply.status(202).send({ cancelled: true });
   });
 
   return app;

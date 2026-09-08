@@ -1,4 +1,10 @@
-import { agentModelSchema, type AgentModel, type AgentRuntime } from "@peerly/agent-protocol";
+import {
+  agentModelSchema,
+  type AgentHost,
+  type AgentModel,
+  type AgentRuntime,
+} from "@peerly/agent-protocol";
+import { randomUUID } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ZodType } from "zod";
@@ -14,6 +20,7 @@ export interface CreateAgentRuntimeOptions {
   generateId?: () => string;
   now?: () => string;
   models?: Models;
+  host?: AgentHost;
 }
 
 export async function createAgentRuntime(
@@ -31,7 +38,23 @@ export async function createAgentRuntime(
     ...(options.now ? { now: options.now } : {}),
   });
 
-  return new PiAgentRuntime(service, options.dataDirectory, options.models ?? builtinModels());
+  return new PiAgentRuntime(
+    service,
+    options.dataDirectory,
+    options.models ?? builtinModels(),
+    options.host ?? standaloneHost(),
+  );
+}
+
+function standaloneHost(): AgentHost {
+  return {
+    async publishReply() {
+      return {
+        messageId: `standalone_${randomUUID()}`,
+        createdAt: new Date().toISOString(),
+      };
+    },
+  };
 }
 
 function parseInput<T>(schema: ZodType<T>, input: unknown): T {

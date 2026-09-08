@@ -1,31 +1,39 @@
-import {
-  AgentHarness,
-  BACKGROUND_CONTEXT,
-  type AgentLane,
-  type AgentMessage,
-} from "@earendil-works/pi-agent-core";
-import { contentText, type AssistantMessage, type Models } from "@earendil-works/pi-ai";
-import type { RuntimeAgentDefinition, SendAgentMessageInput } from "@peerly/agent-protocol";
+import { AgentHarness, BACKGROUND_CONTEXT, type AgentLane } from "@earendil-works/pi-agent-core";
+import type { Models } from "@earendil-works/pi-ai";
+import type {
+  AgentHost,
+  DeliverAgentMessageInput,
+  PublishedAgentReply,
+  RuntimeAgentDefinition,
+} from "@peerly/agent-protocol";
 
 import type { AgentDefinitionService } from "./agent-definition-service.js";
 import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
+import type { ConversationSessionIndex } from "./conversation-session-index.js";
+import { buildAgentSystemPrompt, formatPeerlyMessageBatch } from "./peerly-system-prompt.js";
 import type { PiSessionStore } from "./pi-session-store.js";
+import { createReplyTool, type ReplyToolContext } from "./reply-tool.js";
 
 const MAIN_LANE = "main";
 
 export interface RunPiMessageOptions {
   signal: AbortSignal;
-  onDelta: (delta: string) => void;
+  onThinkingDelta: (delta: string) => void;
+  onToolStarted: (toolName: string) => void;
+  onToolCompleted: (toolName: string) => void;
+  onReply: (text: string, result: PublishedAgentReply) => void;
 }
 
 export class PiMessageRunner {
   constructor(
     private readonly definitions: AgentDefinitionService,
     private readonly sessions: PiSessionStore,
+    private readonly conversationSessions: ConversationSessionIndex,
     private readonly models: Models,
+    private readonly host: AgentHost,
   ) {}
 
-  async run(input: SendAgentMessageInput, options: RunPiMessageOptions): Promise<string> {
+  async run(input: DeliverAgentMessageInput, options: RunPiMessageOptions): Promise<number> {
     const agent = await this.getEnabledAgent(input.agentId);
     const model = this.models.getModel(agent.model.provider, agent.model.modelId);
     if (!model) {
@@ -37,8 +45,25 @@ export class PiMessageRunner {
     }
 
     if (options.signal.aborted) throw new MessageRunCancelledError();
-    const session = await this.sessions.open(input.agentId, input.sessionId);
-    let harness: Awaited<ReturnType<typeof AgentHarness.create>>["harness"] | undefined;
+    const sessionId = await this.conversationSessions.resolve(input.agentId, input.conversation.id);
+    const session = await this.sessions.open(input.agentId, sessionId);
+    let harness:
+      Awaited<ReturnType<typeof AgentHarness.create<ReplyToolContext>>>["harness"] | undefined;
+    let replyCount = 0;
+    const toolContext: ReplyToolContext = {
+      deliveryId: input.deliveryId,
+      runtimeAgentId: input.agentId,
+      conversationId: input.conversation.id,
+      host: this.host,
+      signal: options.signal,
+      nextReplyIndex: () => replyCount,
+      onReply: (text, result) => {
+        replyCount += 1;
+        options.onReply(text, result);
+      },
+      onToolStarted: () => options.onToolStarted("reply"),
+      onToolCompleted: () => options.onToolCompleted("reply"),
+    };
 
     try {
       ({ harness } = await AgentHarness.create(
@@ -46,41 +71,44 @@ export class PiMessageRunner {
           session,
           models: this.models,
           model,
-          systemPrompt: agent.instructions,
+          systemPrompt: buildAgentSystemPrompt(agent),
+          tools: [createReplyTool()],
+          activeToolNames: ["reply"],
+          toolContext,
+          toolExecution: "sequential",
         },
         BACKGROUND_CONTEXT,
       ));
       const lane = await harness.lane(MAIN_LANE, BACKGROUND_CONTEXT);
       await alignLaneModel(lane, agent);
 
-      let finalAssistantMessage: AssistantMessage | undefined;
-      const unsubscribeEnd = harness.events.on("message_end", (event) => {
-        if (isAssistantMessage(event.message)) finalAssistantMessage = event.message;
-      });
       const unsubscribeUpdates = harness.events.on("message_update", (event) => {
+        if (options.signal.aborted) return;
         if (
-          !options.signal.aborted &&
-          event.event.type === "text_delta" &&
+          (event.event.type === "text_delta" || event.event.type === "thinking_delta") &&
           event.event.delta.length > 0
         ) {
-          options.onDelta(event.event.delta);
+          options.onThinkingDelta(event.event.delta);
         }
       });
 
       try {
-        await promptLane(lane, input.content, options.signal);
+        const modelInput = formatPeerlyMessageBatch(input);
+        await promptLane(lane, modelInput, options.signal);
+        if (replyCount === 0) {
+          await promptLane(lane, modelInput, options.signal);
+        }
       } finally {
-        unsubscribeEnd();
         unsubscribeUpdates();
       }
 
-      if (!finalAssistantMessage) {
+      if (replyCount === 0) {
         throw new AgentRuntimeOperationError(
-          "INTERNAL_ERROR",
-          "Agent run completed without an assistant response",
+          "REPLY_REQUIRED",
+          "The Agent did not call reply for a direct message",
         );
       }
-      return contentText(finalAssistantMessage.content);
+      return replyCount;
     } catch (error) {
       if (
         error instanceof MessageRunCancelledError ||
@@ -173,10 +201,6 @@ async function abortPromptLane(lane: AgentLane, promptSettled: () => boolean): P
     }
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-}
-
-function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
-  return "role" in message && message.role === "assistant";
 }
 
 function isAbortError(error: unknown): boolean {

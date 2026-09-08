@@ -2,8 +2,14 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import type { Conversation, HumanPrincipal, Message, Principal } from "@peerly/contracts";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import type {
+  AgentPrincipal,
+  Conversation,
+  HumanPrincipal,
+  Message,
+  Principal,
+} from "@peerly/contracts";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -17,6 +23,7 @@ import type {
 const alice = human("human_alice", "Alice", "admin");
 const bob = human("human_bob", "Bob", "member");
 const charlie = human("human_charlie", "Charlie", "member");
+const researcher = agent("agent_researcher", "Researcher", "runtime_researcher");
 
 afterEach(cleanup);
 
@@ -108,6 +115,54 @@ describe("Peerly Web", () => {
     expect(await within(memberPanel).findByText("Bob")).toBeInTheDocument();
     expect(api.createHuman).toHaveBeenCalledWith("Bob");
   });
+
+  it("管理员可以创建 Agent，聊天界面不展示 Agent 运行过程", async () => {
+    const conversation = directConversation(
+      "conversation_alice_researcher",
+      alice.id,
+      researcher.id,
+    );
+    const api = fakeApi({
+      session: alice,
+      principals: [alice],
+      createdAgent: researcher,
+      conversations: [conversation],
+    });
+    const realtime = new FakeRealtimeClient();
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={realtime} />);
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Agent 名称" }), "Researcher");
+    await user.type(screen.getByRole("textbox", { name: "Agent 个性化设定" }), "擅长资料整理");
+    await user.click(screen.getByRole("button", { name: "创建 Agent" }));
+    expect((await screen.findAllByText("Researcher")).length).toBeGreaterThan(0);
+    expect(api.createAgent).toHaveBeenCalledWith("Researcher", "擅长资料整理");
+
+    await user.click(
+      within(screen.getByRole("region", { name: "会话" })).getByRole("button", {
+        name: /Researcher/,
+      }),
+    );
+    act(() => {
+      realtime.emit({
+        type: "agent.activity",
+        deliveryId: "delivery-1",
+        conversationId: conversation.id,
+        agentId: researcher.id,
+        activity: {
+          type: "thinking_delta",
+          timestamp: "2026-09-08T10:30:00.000Z",
+          delta: "正在分析需求",
+        },
+      });
+    });
+
+    expect(screen.queryByText("Researcher 正在处理")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在分析需求")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "停止 Researcher" })).not.toBeInTheDocument();
+  });
 });
 
 class FakeRealtimeClient implements PeerlyRealtimeClient {
@@ -139,6 +194,7 @@ function fakeApi(options: {
   conversations?: Conversation[];
   createdConversation?: Conversation;
   sentMessage?: Message;
+  createdAgent?: AgentPrincipal;
 }): PeerlyApi & Record<keyof PeerlyApi, ReturnType<typeof vi.fn>> {
   const createdConversation =
     options.createdConversation ?? directConversation("conversation_default", alice.id, bob.id);
@@ -149,11 +205,24 @@ function fakeApi(options: {
     listDevelopmentPrincipals: vi.fn().mockResolvedValue(options.developmentPrincipals ?? [alice]),
     selectSession: vi.fn().mockResolvedValue(alice),
     createHuman: vi.fn().mockResolvedValue(alice),
+    createAgent: vi.fn().mockResolvedValue(options.createdAgent ?? researcher),
     listPrincipals: vi.fn().mockResolvedValue(options.principals ?? [alice]),
     listConversations: vi.fn().mockResolvedValue(options.conversations ?? []),
     createDirectConversation: vi.fn().mockResolvedValue(createdConversation),
     listMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     sendMessage: vi.fn().mockResolvedValue(sentMessage),
+    cancelAgentDelivery: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function agent(id: string, displayName: string, runtimeAgentId: string): AgentPrincipal {
+  return {
+    id,
+    type: "agent",
+    displayName,
+    runtimeAgentId,
+    status: "active",
+    createdAt: "2026-09-07T00:00:00.000Z",
   };
 }
 

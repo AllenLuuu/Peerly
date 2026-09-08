@@ -44,6 +44,12 @@ importers:
       '@fastify/cookie':
         specifier: ^11.0.0
         version: 11.1.2
+      '@peerly/agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agent-protocol
+      '@peerly/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@peerly/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

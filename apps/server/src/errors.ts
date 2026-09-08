@@ -3,7 +3,9 @@ export type PeerlyErrorCode =
   | "FORBIDDEN"
   | "PRINCIPAL_NOT_FOUND"
   | "CONVERSATION_NOT_FOUND"
-  | "INVALID_OPERATION";
+  | "INVALID_OPERATION"
+  | "AGENT_RUNTIME_UNAVAILABLE"
+  | "DELIVERY_NOT_FOUND";
 
 export class PeerlyError extends Error {
   readonly code: PeerlyErrorCode;

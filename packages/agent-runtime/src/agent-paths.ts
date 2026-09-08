@@ -11,3 +11,7 @@ export function agentDefinitionPath(dataDirectory: string, agentId: string): str
 export function agentSessionsDirectory(dataDirectory: string, agentId: string): string {
   return join(agentDirectory(dataDirectory, agentId), "sessions");
 }
+
+export function agentConversationIndexPath(dataDirectory: string, agentId: string): string {
+  return join(agentSessionsDirectory(dataDirectory, agentId), "conversations.json");
+}

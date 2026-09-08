@@ -3,13 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  contentText,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  fauxToolCall,
   type Models,
 } from "@earendil-works/pi-ai";
-import type { AgentRuntime, AgentRuntimeEvent } from "@peerly/agent-protocol";
+import type {
+  AgentHost,
+  AgentRuntime,
+  AgentRuntimeEvent,
+  DeliverAgentMessageInput,
+} from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAgentRuntime } from "./index.js";
@@ -17,306 +22,194 @@ import { createAgentRuntime } from "./index.js";
 const temporaryDirectories: string[] = [];
 const runtimes: AgentRuntime[] = [];
 
-async function makeDataDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "peerly-agent-conversation-"));
-  temporaryDirectories.push(directory);
-  return directory;
-}
+afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.close()));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
 
-async function makeRuntime(dataDirectory: string, models: Models): Promise<AgentRuntime> {
-  const runtime = await createAgentRuntime({ dataDirectory, models });
-  runtimes.push(runtime);
-  return runtime;
-}
+describe("Agent Runtime Conversation session", () => {
+  it("重启后按 Agent 和 Conversation 恢复上下文", async () => {
+    const dataDirectory = await makeDataDirectory();
+    const firstModels = makeFauxModels();
+    firstModels.faux.setResponses([replyResponse("记住了")]);
+    const firstRuntime = await makeRuntime(dataDirectory, firstModels.models);
+    await createAgent(firstRuntime);
+    await collect(firstRuntime.deliverMessage(delivery("项目叫 Peerly")));
+    await firstRuntime.close();
+    runtimes.splice(runtimes.indexOf(firstRuntime), 1);
 
-function makeFauxModels(modelIds = ["chat-model"]) {
-  const faux = fauxProvider({
-    provider: "faux",
-    models: modelIds.map((id) => ({ id })),
+    const secondModels = makeFauxModels();
+    let restoredContext = "";
+    secondModels.faux.setResponses([
+      (context) => {
+        restoredContext = JSON.stringify(context.messages);
+        return replyResponse("Peerly");
+      },
+    ]);
+    const restarted = await makeRuntime(dataDirectory, secondModels.models);
+    const events = await collect(
+      restarted.deliverMessage(
+        delivery("项目叫什么？", { deliveryId: "delivery-2", messageId: "message-2" }),
+      ),
+    );
+
+    expect(restoredContext).toContain("项目叫 Peerly");
+    expect(restoredContext).toContain("项目叫什么？");
+    expect(events.at(-1)).toMatchObject({ type: "run_completed", replyCount: 1 });
   });
-  const models = createModels();
-  models.setProvider(faux.provider);
-  return { faux, models };
+
+  it("下一次运行使用最新的个性化设定和模型", async () => {
+    const faux = fauxProvider({
+      provider: "faux",
+      models: [{ id: "model-v1" }, { id: "model-v2" }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const observed: Array<{ modelId: string; systemPrompt?: string }> = [];
+    faux.setResponses([
+      (context, _options, _state, model) => {
+        observed.push({
+          modelId: model.id,
+          ...(context.systemPrompt ? { systemPrompt: context.systemPrompt } : {}),
+        });
+        return replyResponse("第一次");
+      },
+      (context, _options, _state, model) => {
+        observed.push({
+          modelId: model.id,
+          ...(context.systemPrompt ? { systemPrompt: context.systemPrompt } : {}),
+        });
+        return replyResponse("第二次");
+      },
+    ]);
+    const runtime = await makeRuntime(await makeDataDirectory(), models);
+    await createAgent(runtime, { instructions: "版本一", modelId: "model-v1" });
+    await collect(runtime.deliverMessage(delivery("一")));
+    await runtime.updateAgent("assistant", {
+      instructions: "版本二",
+      model: { provider: "faux", modelId: "model-v2" },
+    });
+    await collect(
+      runtime.deliverMessage(delivery("二", { deliveryId: "delivery-2", messageId: "message-2" })),
+    );
+
+    expect(observed[0]).toMatchObject({
+      modelId: "model-v1",
+      systemPrompt: expect.stringContaining("版本一"),
+    });
+    expect(observed[1]).toMatchObject({
+      modelId: "model-v2",
+      systemPrompt: expect.stringContaining("版本二"),
+    });
+  });
+
+  it("以稳定错误报告禁用、删除、未知模型和 Provider 失败", async () => {
+    const { faux, models } = makeFauxModels();
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider failed" }),
+    ]);
+    const runtime = await makeRuntime(await makeDataDirectory(), models);
+    await createAgent(runtime, { id: "disabled", enabled: false });
+    await createAgent(runtime, { id: "missing-model", modelId: "unknown" });
+    await createAgent(runtime, { id: "broken" });
+    await createAgent(runtime, { id: "deleted" });
+    await runtime.deleteAgent("deleted");
+
+    expect(await terminalError(runtime, delivery("x", { agentId: "disabled" }))).toBe(
+      "AGENT_DISABLED",
+    );
+    expect(await terminalError(runtime, delivery("x", { agentId: "missing-model" }))).toBe(
+      "MODEL_NOT_FOUND",
+    );
+    expect(await terminalError(runtime, delivery("x", { agentId: "broken" }))).toBe(
+      "PROVIDER_ERROR",
+    );
+    expect(await terminalError(runtime, delivery("x", { agentId: "deleted" }))).toBe(
+      "AGENT_NOT_FOUND",
+    );
+  });
+});
+
+async function terminalError(runtime: AgentRuntime, input: DeliverAgentMessageInput) {
+  const terminal = (await collect(runtime.deliverMessage(input))).at(-1);
+  expect(terminal?.type).toBe("run_failed");
+  return terminal?.type === "run_failed" ? terminal.error.code : undefined;
+}
+
+function delivery(
+  text: string,
+  overrides: {
+    agentId?: string;
+    deliveryId?: string;
+    conversationId?: string;
+    messageId?: string;
+  } = {},
+): DeliverAgentMessageInput {
+  return {
+    deliveryId: overrides.deliveryId ?? `delivery-${overrides.agentId ?? "assistant"}`,
+    agentId: overrides.agentId ?? "assistant",
+    conversation: { id: overrides.conversationId ?? "conversation-1", type: "direct" },
+    messages: [
+      {
+        id: overrides.messageId ?? "message-1",
+        sender: { id: "human-alice", type: "human", name: "Alice" },
+        createdAt: "2026-09-08T10:00:00.000Z",
+        content: { type: "text", text },
+      },
+    ],
+  };
+}
+
+function replyResponse(text: string) {
+  return fauxAssistantMessage(fauxToolCall("reply", { text }), { stopReason: "toolUse" });
 }
 
 async function createAgent(
   runtime: AgentRuntime,
-  overrides: {
-    id?: string;
-    instructions?: string;
-    modelId?: string;
-    enabled?: boolean;
-  } = {},
+  overrides: { id?: string; instructions?: string; modelId?: string; enabled?: boolean } = {},
 ) {
-  return runtime.createAgent({
+  await runtime.createAgent({
     id: overrides.id ?? "assistant",
     name: "Assistant",
-    instructions: overrides.instructions ?? "Help the user.",
+    instructions: overrides.instructions ?? "帮助用户",
     model: { provider: "faux", modelId: overrides.modelId ?? "chat-model" },
     enabled: overrides.enabled ?? true,
   });
 }
 
-function messageText(message: {
-  role: string;
-  content: Parameters<typeof contentText>[0];
-}): string {
-  return `${message.role}:${contentText(message.content)}`;
+function makeFauxModels() {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "chat-model" }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  return { faux, models };
 }
 
-async function sendAndCollect(
-  runtime: AgentRuntime,
-  input: Parameters<AgentRuntime["sendMessage"]>[0],
-): Promise<AgentRuntimeEvent[]> {
+async function makeRuntime(dataDirectory: string, models: Models) {
+  const host: AgentHost = {
+    async publishReply(input) {
+      return {
+        messageId: `${input.deliveryId}-${input.replyIndex}`,
+        createdAt: new Date().toISOString(),
+      };
+    },
+  };
+  const runtime = await createAgentRuntime({ dataDirectory, models, host });
+  runtimes.push(runtime);
+  return runtime;
+}
+
+async function makeDataDirectory() {
+  const directory = await mkdtemp(join(tmpdir(), "peerly-agent-conversation-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+async function collect(stream: AsyncIterable<AgentRuntimeEvent>) {
   const events: AgentRuntimeEvent[] = [];
-  for await (const event of runtime.sendMessage(input)) events.push(event);
+  for await (const event of stream) events.push(event);
   return events;
 }
-
-async function sendAndGetReply(
-  runtime: AgentRuntime,
-  input: Parameters<AgentRuntime["sendMessage"]>[0],
-): Promise<string> {
-  const terminal = (await sendAndCollect(runtime, input)).at(-1);
-  expect(terminal).toMatchObject({ type: "run_completed" });
-  if (terminal?.type !== "run_completed") throw new Error("Expected a completed Agent run");
-  return terminal.content;
-}
-
-async function sendAndGetFailure(
-  runtime: AgentRuntime,
-  input: Parameters<AgentRuntime["sendMessage"]>[0],
-): Promise<Extract<AgentRuntimeEvent, { type: "run_failed" }>> {
-  const terminal = (await sendAndCollect(runtime, input)).at(-1);
-  expect(terminal).toMatchObject({ type: "run_failed" });
-  if (terminal?.type !== "run_failed") throw new Error("Expected a failed Agent run");
-  return terminal;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    runtimes.splice(0).map(async (runtime) => {
-      await runtime.close?.();
-    }),
-  );
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, {
-        recursive: true,
-        force: true,
-      }),
-    ),
-  );
-});
-
-describe("Agent Runtime conversations", () => {
-  it("creates, lists, and deletes Pi sessions", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const { models } = makeFauxModels();
-    const runtime = await makeRuntime(dataDirectory, models);
-    await createAgent(runtime);
-
-    const session = await runtime.createSession({ agentId: "assistant" });
-
-    expect(session).toMatchObject({ agentId: "assistant" });
-    expect(session.id).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(Number.isNaN(Date.parse(session.createdAt))).toBe(false);
-    await expect(runtime.listSessions("assistant")).resolves.toEqual([session]);
-
-    await runtime.deleteSession({ agentId: "assistant", sessionId: session.id });
-
-    await expect(runtime.listSessions("assistant")).resolves.toEqual([]);
-    await expect(
-      sendAndGetFailure(runtime, {
-        agentId: "assistant",
-        sessionId: session.id,
-        content: "Hello",
-      }),
-    ).resolves.toMatchObject({ error: { code: "SESSION_NOT_FOUND" } });
-  });
-
-  it("keeps multi-turn context in one session and isolates different sessions", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const { faux, models } = makeFauxModels();
-    const observedTranscripts: string[][] = [];
-    faux.setResponses([
-      fauxAssistantMessage("I will remember that."),
-      (context) => {
-        observedTranscripts.push(context.messages.map(messageText));
-        return fauxAssistantMessage("Your project is Peerly.");
-      },
-      (context) => {
-        observedTranscripts.push(context.messages.map(messageText));
-        return fauxAssistantMessage("I do not know yet.");
-      },
-    ]);
-    const runtime = await makeRuntime(dataDirectory, models);
-    await createAgent(runtime);
-    const firstSession = await runtime.createSession({ agentId: "assistant" });
-    const secondSession = await runtime.createSession({ agentId: "assistant" });
-
-    await sendAndGetReply(runtime, {
-      agentId: "assistant",
-      sessionId: firstSession.id,
-      content: "My project is Peerly.",
-    });
-    await expect(
-      sendAndGetReply(runtime, {
-        agentId: "assistant",
-        sessionId: firstSession.id,
-        content: "What is my project?",
-      }),
-    ).resolves.toBe("Your project is Peerly.");
-    await sendAndGetReply(runtime, {
-      agentId: "assistant",
-      sessionId: secondSession.id,
-      content: "What is my project?",
-    });
-
-    expect(observedTranscripts[0]).toEqual([
-      "user:My project is Peerly.",
-      "assistant:I will remember that.",
-      "user:What is my project?",
-    ]);
-    expect(observedTranscripts[1]).toEqual(["user:What is my project?"]);
-  });
-
-  it("restores conversation context after the Runtime restarts", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const firstFaux = makeFauxModels();
-    firstFaux.faux.setResponses([fauxAssistantMessage("Saved.")]);
-    const firstRuntime = await makeRuntime(dataDirectory, firstFaux.models);
-    await createAgent(firstRuntime);
-    const session = await firstRuntime.createSession({ agentId: "assistant" });
-    await sendAndGetReply(firstRuntime, {
-      agentId: "assistant",
-      sessionId: session.id,
-      content: "Remember Peerly.",
-    });
-    await firstRuntime.close();
-    runtimes.splice(runtimes.indexOf(firstRuntime), 1);
-
-    const secondFaux = makeFauxModels();
-    let restoredTranscript: string[] = [];
-    secondFaux.faux.setResponses([
-      (context) => {
-        restoredTranscript = context.messages.map(messageText);
-        return fauxAssistantMessage("I remember Peerly.");
-      },
-    ]);
-    const restartedRuntime = await makeRuntime(dataDirectory, secondFaux.models);
-
-    await expect(
-      sendAndGetReply(restartedRuntime, {
-        agentId: "assistant",
-        sessionId: session.id,
-        content: "What should you remember?",
-      }),
-    ).resolves.toBe("I remember Peerly.");
-    expect(restoredTranscript).toEqual([
-      "user:Remember Peerly.",
-      "assistant:Saved.",
-      "user:What should you remember?",
-    ]);
-  });
-
-  it("uses the latest Agent configuration for the next message", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const { faux, models } = makeFauxModels(["model-v1", "model-v2"]);
-    const observedConfigurations: { modelId: string; systemPrompt: string | undefined }[] = [];
-    faux.setResponses([
-      (context, _options, _state, model) => {
-        observedConfigurations.push({ modelId: model.id, systemPrompt: context.systemPrompt });
-        return fauxAssistantMessage("First reply");
-      },
-      (context, _options, _state, model) => {
-        observedConfigurations.push({ modelId: model.id, systemPrompt: context.systemPrompt });
-        return fauxAssistantMessage("Second reply");
-      },
-    ]);
-    const runtime = await makeRuntime(dataDirectory, models);
-    await createAgent(runtime, { instructions: "Version one.", modelId: "model-v1" });
-    const session = await runtime.createSession({ agentId: "assistant" });
-
-    await sendAndGetReply(runtime, {
-      agentId: "assistant",
-      sessionId: session.id,
-      content: "One",
-    });
-    await runtime.updateAgent("assistant", {
-      instructions: "Version two.",
-      model: { provider: "faux", modelId: "model-v2" },
-    });
-    await sendAndGetReply(runtime, {
-      agentId: "assistant",
-      sessionId: session.id,
-      content: "Two",
-    });
-
-    expect(observedConfigurations).toEqual([
-      { modelId: "model-v1", systemPrompt: "Version one." },
-      { modelId: "model-v2", systemPrompt: "Version two." },
-    ]);
-  });
-
-  it("rejects sessions for the wrong, disabled, or deleted Agent", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const { faux, models } = makeFauxModels();
-    faux.setResponses([fauxAssistantMessage("Should not be used")]);
-    const runtime = await makeRuntime(dataDirectory, models);
-    await createAgent(runtime, { id: "first" });
-    await createAgent(runtime, { id: "second" });
-    await createAgent(runtime, { id: "disabled", enabled: false });
-    const session = await runtime.createSession({ agentId: "first" });
-
-    await expect(runtime.createSession({ agentId: "disabled" })).rejects.toMatchObject({
-      code: "AGENT_DISABLED",
-    });
-    await expect(
-      sendAndGetFailure(runtime, {
-        agentId: "second",
-        sessionId: session.id,
-        content: "Hello",
-      }),
-    ).resolves.toMatchObject({ error: { code: "SESSION_NOT_FOUND" } });
-
-    await runtime.deleteAgent("first");
-    await expect(
-      sendAndGetFailure(runtime, {
-        agentId: "first",
-        sessionId: session.id,
-        content: "Hello",
-      }),
-    ).resolves.toMatchObject({ error: { code: "AGENT_NOT_FOUND" } });
-  });
-
-  it("reports unknown models and provider failures as stable Runtime errors", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const { faux, models } = makeFauxModels();
-    faux.setResponses([
-      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider failed" }),
-    ]);
-    const runtime = await makeRuntime(dataDirectory, models);
-    await createAgent(runtime, { id: "unknown-model", modelId: "missing-model" });
-    await createAgent(runtime, { id: "broken-provider" });
-    const unknownModelSession = await runtime.createSession({ agentId: "unknown-model" });
-    const brokenProviderSession = await runtime.createSession({ agentId: "broken-provider" });
-
-    await expect(
-      sendAndGetFailure(runtime, {
-        agentId: "unknown-model",
-        sessionId: unknownModelSession.id,
-        content: "Hello",
-      }),
-    ).resolves.toMatchObject({ error: { code: "MODEL_NOT_FOUND" } });
-    await expect(
-      sendAndGetFailure(runtime, {
-        agentId: "broken-provider",
-        sessionId: brokenProviderSession.id,
-        content: "Hello",
-      }),
-    ).resolves.toMatchObject({
-      error: { code: "PROVIDER_ERROR", message: "Provider failed" },
-    });
-  });
-});

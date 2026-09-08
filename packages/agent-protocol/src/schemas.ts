@@ -38,27 +38,30 @@ export const updateAgentInputSchema = z
     message: "At least one change is required",
   });
 
-export const agentSessionSchema = z.strictObject({
+export const runtimeMessageSchema = z.strictObject({
   id: nonEmptyString,
-  agentId: agentIdSchema,
-  createdAt: isoDateTime,
-});
-
-export const createAgentSessionInputSchema = z.strictObject({
-  agentId: agentIdSchema,
-});
-
-export const deleteAgentSessionInputSchema = z.strictObject({
-  agentId: agentIdSchema,
-  sessionId: nonEmptyString,
-});
-
-export const sendAgentMessageInputSchema = z.strictObject({
-  agentId: agentIdSchema,
-  sessionId: nonEmptyString,
-  content: z.string().refine((content) => content.trim().length > 0, {
-    message: "Message content must not be empty",
+  sender: z.strictObject({
+    id: nonEmptyString,
+    type: z.enum(["human", "agent"]),
+    name: nonEmptyString,
   }),
+  createdAt: isoDateTime,
+  content: z.strictObject({
+    type: z.literal("text"),
+    text: z.string().refine((text) => text.trim().length > 0, {
+      message: "Message content must not be empty",
+    }),
+  }),
+});
+
+export const deliverAgentMessageInputSchema = z.strictObject({
+  deliveryId: nonEmptyString,
+  agentId: agentIdSchema,
+  conversation: z.strictObject({
+    id: nonEmptyString,
+    type: z.literal("direct"),
+  }),
+  messages: z.array(runtimeMessageSchema).min(1),
 });
 
 export const agentRuntimeErrorCodeSchema = z.enum([
@@ -68,6 +71,7 @@ export const agentRuntimeErrorCodeSchema = z.enum([
   "MODEL_NOT_FOUND",
   "MODEL_REQUIRED",
   "PROVIDER_ERROR",
+  "REPLY_REQUIRED",
   "RUNTIME_CLOSED",
   "SESSION_NOT_FOUND",
   "VALIDATION_ERROR",
@@ -92,14 +96,31 @@ export const runStartedEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("run_started"),
 });
 
-export const outputDeltaEventSchema = agentRuntimeEventBaseSchema.extend({
-  type: z.literal("output_delta"),
+export const thinkingDeltaEventSchema = agentRuntimeEventBaseSchema.extend({
+  type: z.literal("thinking_delta"),
   delta: z.string().min(1),
+});
+
+export const toolStartedEventSchema = agentRuntimeEventBaseSchema.extend({
+  type: z.literal("tool_started"),
+  toolName: nonEmptyString,
+});
+
+export const toolCompletedEventSchema = agentRuntimeEventBaseSchema.extend({
+  type: z.literal("tool_completed"),
+  toolName: nonEmptyString,
+});
+
+export const replyPublishedEventSchema = agentRuntimeEventBaseSchema.extend({
+  type: z.literal("reply_published"),
+  text: nonEmptyString,
+  messageId: nonEmptyString,
+  createdAt: isoDateTime,
 });
 
 export const runCompletedEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("run_completed"),
-  content: z.string(),
+  replyCount: z.number().int().nonnegative(),
 });
 
 export const runCancelledEventSchema = agentRuntimeEventBaseSchema.extend({
@@ -114,7 +135,10 @@ export const runFailedEventSchema = agentRuntimeEventBaseSchema.extend({
 export const agentRuntimeEventSchema = z.discriminatedUnion("type", [
   runQueuedEventSchema,
   runStartedEventSchema,
-  outputDeltaEventSchema,
+  thinkingDeltaEventSchema,
+  toolStartedEventSchema,
+  toolCompletedEventSchema,
+  replyPublishedEventSchema,
   runCompletedEventSchema,
   runCancelledEventSchema,
   runFailedEventSchema,
@@ -126,17 +150,32 @@ export type AgentModel = z.infer<typeof agentModelSchema>;
 export type RuntimeAgentDefinition = z.infer<typeof runtimeAgentDefinitionSchema>;
 export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
 export type UpdateAgentInput = z.infer<typeof updateAgentInputSchema>;
-export type AgentSession = z.infer<typeof agentSessionSchema>;
-export type CreateAgentSessionInput = z.infer<typeof createAgentSessionInputSchema>;
-export type DeleteAgentSessionInput = z.infer<typeof deleteAgentSessionInputSchema>;
-export type SendAgentMessageInput = z.infer<typeof sendAgentMessageInputSchema>;
+export type RuntimeMessage = z.infer<typeof runtimeMessageSchema>;
+export type DeliverAgentMessageInput = z.infer<typeof deliverAgentMessageInputSchema>;
 export type AgentRuntimeError = z.infer<typeof agentRuntimeErrorSchema>;
 export type AgentRuntimeErrorCode = z.infer<typeof agentRuntimeErrorCodeSchema>;
 export type AgentRuntimeEvent = z.infer<typeof agentRuntimeEventSchema>;
 export type AgentRuntimeEventStream = AsyncIterable<AgentRuntimeEvent>;
 
-export interface SendMessageOptions {
+export interface DeliverMessageOptions {
   signal?: AbortSignal;
+}
+
+export interface PublishAgentReplyInput {
+  deliveryId: string;
+  runtimeAgentId: string;
+  conversationId: string;
+  text: string;
+  replyIndex: number;
+}
+
+export interface PublishedAgentReply {
+  messageId: string;
+  createdAt: string;
+}
+
+export interface AgentHost {
+  publishReply(input: PublishAgentReplyInput): Promise<PublishedAgentReply>;
 }
 
 export interface AgentRuntime {
@@ -145,9 +184,9 @@ export interface AgentRuntime {
   getAgent(id: string): Promise<RuntimeAgentDefinition>;
   updateAgent(id: string, input: UpdateAgentInput): Promise<RuntimeAgentDefinition>;
   deleteAgent(id: string): Promise<void>;
-  createSession(input: CreateAgentSessionInput): Promise<AgentSession>;
-  listSessions(agentId: string): Promise<AgentSession[]>;
-  deleteSession(input: DeleteAgentSessionInput): Promise<void>;
-  sendMessage(input: SendAgentMessageInput, options?: SendMessageOptions): AgentRuntimeEventStream;
+  deliverMessage(
+    input: DeliverAgentMessageInput,
+    options?: DeliverMessageOptions,
+  ): AgentRuntimeEventStream;
   close(): Promise<void>;
 }

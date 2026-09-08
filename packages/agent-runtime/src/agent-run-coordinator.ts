@@ -2,8 +2,8 @@ import type {
   AgentRuntimeError,
   AgentRuntimeEvent,
   AgentRuntimeEventStream,
-  SendAgentMessageInput,
-  SendMessageOptions,
+  DeliverAgentMessageInput,
+  DeliverMessageOptions,
 } from "@peerly/agent-protocol";
 
 import { BufferedEventStream } from "./agent-event-stream.js";
@@ -11,7 +11,7 @@ import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
 import { MessageRunCancelledError, type PiMessageRunner } from "./pi-message-runner.js";
 
 interface PendingMessageRun {
-  readonly input: SendAgentMessageInput;
+  readonly input: DeliverAgentMessageInput;
   readonly stream: BufferedEventStream<AgentRuntimeEvent>;
   readonly controller: AbortController;
   status: "queued" | "running" | "terminal";
@@ -27,9 +27,9 @@ export class AgentRunCoordinator {
 
   constructor(private readonly runner: PiMessageRunner) {}
 
-  sendMessage(
-    input: SendAgentMessageInput,
-    options: SendMessageOptions = {},
+  deliverMessage(
+    input: DeliverAgentMessageInput,
+    options: DeliverMessageOptions = {},
   ): AgentRuntimeEventStream {
     if (this.closed) {
       throw new AgentRuntimeOperationError("RUNTIME_CLOSED", "Agent Runtime is closed");
@@ -51,7 +51,7 @@ export class AgentRunCoordinator {
       if (options.signal.aborted) this.cancelRun(run);
     }
 
-    const queueKey = sessionQueueKey(input.agentId, input.sessionId);
+    const queueKey = conversationQueueKey(input.agentId, input.conversation.id);
     const queue = this.messageQueues.get(queueKey) ?? [];
     queue.push(run);
     this.messageQueues.set(queueKey, queue);
@@ -108,18 +108,34 @@ export class AgentRunCoordinator {
       this.activeRuns.add(run);
       run.stream.push(timestamped({ type: "run_started" }));
       try {
-        const content = await this.runner.run(run.input, {
+        const replyCount = await this.runner.run(run.input, {
           signal: run.controller.signal,
-          onDelta: (delta) => {
+          onThinkingDelta: (delta) => {
             if (run.status === "running" && !run.controller.signal.aborted) {
-              run.stream.push(timestamped({ type: "output_delta", delta }));
+              run.stream.push(timestamped({ type: "thinking_delta", delta }));
             }
+          },
+          onToolStarted: (toolName) => {
+            run.stream.push(timestamped({ type: "tool_started", toolName }));
+          },
+          onToolCompleted: (toolName) => {
+            run.stream.push(timestamped({ type: "tool_completed", toolName }));
+          },
+          onReply: (text, result) => {
+            run.stream.push(
+              timestamped({
+                type: "reply_published",
+                text,
+                messageId: result.messageId,
+                createdAt: result.createdAt,
+              }),
+            );
           },
         });
         if (run.controller.signal.aborted) {
           this.finishRun(run, { type: "run_cancelled" });
         } else {
-          this.finishRun(run, { type: "run_completed", content });
+          this.finishRun(run, { type: "run_completed", replyCount });
         }
       } catch (error) {
         if (error instanceof MessageRunCancelledError || run.controller.signal.aborted) {
@@ -134,7 +150,7 @@ export class AgentRunCoordinator {
   private finishRun(
     run: PendingMessageRun,
     event:
-      | { type: "run_completed"; content: string }
+      | { type: "run_completed"; replyCount: number }
       | { type: "run_cancelled" }
       | { type: "run_failed"; error: AgentRuntimeError },
   ): void {
@@ -153,8 +169,8 @@ export class AgentRunCoordinator {
   }
 }
 
-function sessionQueueKey(agentId: string, sessionId: string): string {
-  return `${agentId}\u0000${sessionId}`;
+function conversationQueueKey(agentId: string, conversationId: string): string {
+  return `${agentId}\u0000${conversationId}`;
 }
 
 function timestamped<T extends Omit<AgentRuntimeEvent, "timestamp">>(

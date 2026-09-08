@@ -33,7 +33,7 @@ pnpm build
 pnpm dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加其他成员并发起私聊。要同时模拟两位成员，请使用两个不共享 Cookie 的浏览器环境，例如普通窗口和无痕窗口。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
+浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent，并与任一成员发起私聊。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
 
 ## Peerly 后端
 
@@ -57,31 +57,53 @@ pnpm runtime:cli
 
 如果使用 OpenAI-compatible 接口，需要设置 `PEERLY_MODEL_PROVIDER=openai-compatible`、`PEERLY_MODEL_ID`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。`PEERLY_OPENAI_API` 可以设为 `chat-completions`（默认值）或 `responses`。
 
+使用本地配置的真实模型执行一次临时数据目录中的完整私聊 smoke test：
+
+```sh
+pnpm smoke:agent
+```
+
+该命令会通过真实 HTTP API 创建管理员、Agent 和私聊，发送消息并等待 `reply` 工具生成的正式回复，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
+
 Peerly 后端或 Runtime CLI 等调用方负责创建 Runtime，并为每条消息消费一个事件流：
 
 ```ts
 import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
 
-const runtime = await createAgentRuntimeFromEnvironment();
+const runtime = await createAgentRuntimeFromEnvironment({
+  host: {
+    async publishReply() {
+      // 平台在这里校验权限、持久化正式消息并返回结果。
+      return { messageId: "message-1", createdAt: new Date().toISOString() };
+    },
+  },
+});
 
 const agent = await runtime.createAgent({
   name: "研究助手",
   instructions: "帮助用户查找可靠资料。",
 });
 
-const session = await runtime.createSession({ agentId: agent.id });
 const controller = new AbortController();
-for await (const event of runtime.sendMessage(
+for await (const event of runtime.deliverMessage(
   {
+    deliveryId: "delivery-1",
     agentId: agent.id,
-    sessionId: session.id,
-    content: "我们应该先研究什么？",
+    conversation: { id: "conversation-1", type: "direct" },
+    messages: [
+      {
+        id: "message-1",
+        sender: { id: "human-1", type: "human", name: "Alice" },
+        createdAt: new Date().toISOString(),
+        content: { type: "text", text: "我们应该先研究什么？" },
+      },
+    ],
   },
   { signal: controller.signal },
 )) {
-  if (event.type === "output_delta") process.stdout.write(event.delta);
+  if (event.type === "thinking_delta") process.stdout.write(event.delta);
 }
 await runtime.close();
 ```
 
-同一个 Agent session 中的消息按 FIFO 顺序执行，不同 session 可以并行执行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。Agent Definition 和 Pi 私有 session 持久化在配置的数据目录中，活动队列和事件流只存在于当前进程。Provider 凭证不会写入 Agent Definition。
+Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session。同一映射中的消息按 FIFO 顺序执行，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Provider 凭证不会写入 Agent Definition。

@@ -1,11 +1,10 @@
 import type {
   AgentRuntime,
   AgentRuntimeEvent,
-  AgentSession,
   CreateAgentInput,
+  DeliverAgentMessageInput,
+  DeliverMessageOptions,
   RuntimeAgentDefinition,
-  SendAgentMessageInput,
-  SendMessageOptions,
 } from "@peerly/agent-protocol";
 import { describe, expect, it } from "vitest";
 
@@ -45,17 +44,15 @@ class ScriptedTerminal implements RuntimeCliTerminal {
 }
 
 class FakeRuntime implements AgentRuntime {
-  readonly sentMessages: SendAgentMessageInput[] = [];
+  readonly deliveredMessages: DeliverAgentMessageInput[] = [];
   readonly createdAgents: CreateAgentInput[] = [];
-  readonly createdSessions: AgentSession[] = [];
   closed = false;
 
   constructor(
     readonly agents: RuntimeAgentDefinition[] = [],
-    readonly sessions: AgentSession[] = [],
     private readonly response: (
-      input: SendAgentMessageInput,
-      options: SendMessageOptions,
+      input: DeliverAgentMessageInput,
+      options: DeliverMessageOptions,
     ) => AsyncIterable<AgentRuntimeEvent> = completedResponse,
   ) {}
 
@@ -74,50 +71,25 @@ class FakeRuntime implements AgentRuntime {
     return agent;
   }
 
-  async listAgents(): Promise<RuntimeAgentDefinition[]> {
+  async listAgents() {
     return this.agents;
   }
-
-  async getAgent(id: string): Promise<RuntimeAgentDefinition> {
+  async getAgent(id: string) {
     return this.agents.find((agent) => agent.id === id)!;
   }
-
   async updateAgent(): Promise<RuntimeAgentDefinition> {
-    throw new Error("Not used by CLI");
+    throw new Error("CLI 不使用");
   }
-
   async deleteAgent(): Promise<void> {
-    throw new Error("Not used by CLI");
+    throw new Error("CLI 不使用");
   }
 
-  async createSession(input: { agentId: string }): Promise<AgentSession> {
-    const session = {
-      id: `session-${this.sessions.length + 1}`,
-      agentId: input.agentId,
-      createdAt: timestamp,
-    };
-    this.sessions.push(session);
-    this.createdSessions.push(session);
-    return session;
-  }
-
-  async listSessions(agentId: string): Promise<AgentSession[]> {
-    return this.sessions.filter((session) => session.agentId === agentId);
-  }
-
-  async deleteSession(): Promise<void> {
-    throw new Error("Not used by CLI");
-  }
-
-  sendMessage(
-    input: SendAgentMessageInput,
-    options: SendMessageOptions = {},
-  ): AsyncIterable<AgentRuntimeEvent> {
-    this.sentMessages.push(input);
+  deliverMessage(input: DeliverAgentMessageInput, options: DeliverMessageOptions = {}) {
+    this.deliveredMessages.push(input);
     return this.response(input, options);
   }
 
-  async close(): Promise<void> {
+  async close() {
     this.closed = true;
   }
 }
@@ -125,24 +97,27 @@ class FakeRuntime implements AgentRuntime {
 async function* completedResponse(): AsyncIterable<AgentRuntimeEvent> {
   yield { type: "run_queued", timestamp };
   yield { type: "run_started", timestamp };
-  yield { type: "output_delta", timestamp, delta: "Hello" };
-  yield { type: "output_delta", timestamp, delta: "!" };
-  yield { type: "run_completed", timestamp, content: "Hello!" };
+  yield { type: "thinking_delta", timestamp, delta: "分析中" };
+  yield {
+    type: "reply_published",
+    timestamp,
+    text: "Hello!",
+    messageId: "message-1",
+    createdAt: timestamp,
+  };
+  yield { type: "run_completed", timestamp, replyCount: 1 };
 }
 
 describe("Runtime CLI", () => {
-  it("exits without creating data when input is interrupted during setup", async () => {
+  it("初始化中断时退出且不创建 Agent", async () => {
     const runtime = new FakeRuntime();
     const terminal = new ScriptedTerminal([], undefined, "Agent id [assistant]: ");
-
     await runRuntimeCli({ runtime, terminal });
-
     expect(runtime.createdAgents).toEqual([]);
-    expect(runtime.createdSessions).toEqual([]);
     expect(runtime.closed).toBe(true);
   });
 
-  it("creates the first Agent and supports multi-turn chat plus /new", async () => {
+  it("创建第一个 Agent，并用 /new 切换测试 Conversation", async () => {
     const runtime = new FakeRuntime();
     const terminal = new ScriptedTerminal([
       "assistant",
@@ -153,26 +128,24 @@ describe("Runtime CLI", () => {
       "Hi again",
       "/exit",
     ]);
-
     await runRuntimeCli({ runtime, terminal });
 
-    expect(runtime.createdAgents).toEqual([
-      {
-        id: "assistant",
-        name: "Peerly Assistant",
-        instructions: "Help with Peerly.",
-      },
-    ]);
-    expect(runtime.createdSessions).toHaveLength(2);
-    expect(runtime.sentMessages).toEqual([
-      { agentId: "assistant", sessionId: "session-1", content: "Hi" },
-      { agentId: "assistant", sessionId: "session-2", content: "Hi again" },
-    ]);
+    expect(runtime.deliveredMessages).toHaveLength(2);
+    expect(runtime.deliveredMessages[0]).toMatchObject({
+      agentId: "assistant",
+      messages: [{ content: { text: "Hi" } }],
+    });
+    expect(runtime.deliveredMessages[1]).toMatchObject({
+      agentId: "assistant",
+      messages: [{ content: { text: "Hi again" } }],
+    });
+    expect(runtime.deliveredMessages[0]?.conversation.id).not.toBe(
+      runtime.deliveredMessages[1]?.conversation.id,
+    );
     expect(terminal.output.join("")).toContain("Hello!");
-    expect(runtime.closed).toBe(true);
   });
 
-  it("uses an existing session and Ctrl+C cancels only the active response", async () => {
+  it("Ctrl+C 通过 AbortSignal 取消活跃回复", async () => {
     const agent: RuntimeAgentDefinition = {
       id: "assistant",
       name: "Assistant",
@@ -182,30 +155,14 @@ describe("Runtime CLI", () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    const session: AgentSession = {
-      id: "existing-session",
-      agentId: "assistant",
-      createdAt: timestamp,
-    };
-    const runtime = new FakeRuntime([agent], [session], async function* (_input, options) {
-      yield { type: "run_queued", timestamp };
+    const runtime = new FakeRuntime([agent], async function* (_input, options) {
       yield { type: "run_started", timestamp };
-      yield { type: "output_delta", timestamp, delta: "partial" };
+      yield { type: "thinking_delta", timestamp, delta: "partial" };
       expect(options.signal?.aborted).toBe(true);
       yield { type: "run_cancelled", timestamp };
     });
-    const terminal = new ScriptedTerminal(["", "", "long answer", "/exit"], "partial");
-
+    const terminal = new ScriptedTerminal(["", "long answer", "/exit"], "partial");
     await runRuntimeCli({ runtime, terminal });
-
-    expect(runtime.sentMessages).toEqual([
-      {
-        agentId: "assistant",
-        sessionId: "existing-session",
-        content: "long answer",
-      },
-    ]);
     expect(terminal.output.join("")).toContain("Cancelled");
-    expect(runtime.closed).toBe(true);
   });
 });

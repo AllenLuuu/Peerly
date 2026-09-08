@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 
+import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
+
 import { createPeerlyApp } from "./app.js";
 
 const port = parsePort(process.env.PEERLY_SERVER_PORT);
@@ -8,7 +10,10 @@ const dataDirectory =
   process.env.PEERLY_SERVER_DATA_DIR?.trim() ||
   resolve(import.meta.dirname, "../../../data/server");
 
-const app = await createPeerlyApp({ dataDirectory });
+const app = await createPeerlyApp({
+  dataDirectory,
+  agentRuntimeFactory: (host) => createAgentRuntimeFromEnvironment({ host }),
+});
 
 try {
   await app.listen({ port, host });

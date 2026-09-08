@@ -1,6 +1,6 @@
 # Peerly 后端使用说明
 
-后端提供本地组织、统一 Principal、单聊 Conversation、公开聊天消息和 Socket.IO 实时通知。目前尚未调用 Agent Runtime。
+后端提供本地组织、统一 Principal、单聊 Conversation、公开聊天消息和 Socket.IO 实时通知，并通过 TypeScript 模块接口接入 Agent Runtime。
 
 ## 启动后端
 
@@ -10,12 +10,17 @@
 pnpm server:start
 ```
 
-可以在 `.env.local` 中添加以下可选配置：
+后端启动时同时创建 Agent Runtime，因此 `.env.local` 需要配置模型。下面示例使用 OpenAI-compatible 接口：
 
 ```dotenv
 PEERLY_SERVER_HOST=127.0.0.1
 PEERLY_SERVER_PORT=3000
 PEERLY_SERVER_DATA_DIR=E:/path/to/peerly-server-data
+PEERLY_AGENT_DATA_DIR=E:/path/to/peerly-agent-data
+PEERLY_MODEL_PROVIDER=openai-compatible
+PEERLY_MODEL_ID=your-model-id
+OPENAI_BASE_URL=https://your-model-service.example/v1
+OPENAI_API_KEY=your-api-key
 ```
 
 后端准备就绪后，`GET /health` 返回 `{ "status": "ok" }`。
@@ -45,6 +50,16 @@ curl -b alice.cookies -X POST http://127.0.0.1:3000/api/principals/humans \
   -H "Content-Type: application/json" \
   -d '{"displayName":"Bob"}'
 ```
+
+管理员也可以直接创建 MVP Agent：
+
+```sh
+curl -b alice.cookies -X POST http://127.0.0.1:3000/api/principals/agents \
+  -H "Content-Type: application/json" \
+  -d '{"displayName":"Researcher","instructions":"帮助团队整理可靠资料。"}'
+```
+
+创建成功后，后端会在 Runtime 保存 Agent Definition，并在平台保存对应的 AgentPrincipal。模型使用 Runtime 的默认模型配置，API Key 不会写入 Agent Definition。
 
 `GET /api/session` 返回 cookie 当前选择的 Principal，`GET /api/principals` 返回组织内统一的成员列表。
 
@@ -85,14 +100,22 @@ curl -b alice.cookies \
 
 只有 Conversation 参与者可以读取或发送其中的消息。后端始终从 session cookie 确定发送者，调用方不能在请求体中提供 `senderId`。
 
+当单聊另一方是 Agent 时，人类消息落盘后会立即投递给 Runtime。Runtime 的普通输出只作为可观测活动；只有 Agent 调用 `reply` 工具传入的文本会以 AgentPrincipal 身份写入 JSONL。活动事件中的 `deliveryId` 可用于取消尚未结束的运行：
+
+```sh
+curl -b alice.cookies -X POST \
+  http://127.0.0.1:3000/api/agent-deliveries/<delivery-id>/cancel
+```
+
 ## 实时通知
 
 Socket.IO 与 HTTP 共用 `peerly_session` Cookie。连接建立时后端验证 Human 身份，并将连接加入对应 Principal 的定向房间。
 
-目前只有两种服务端事件，统一通过 `peerly.event` 发送：
+服务端事件统一通过 `peerly.event` 发送：
 
 - `conversation.created`：当前成员收到一个新私聊 Conversation。
 - `message.created`：当前成员参与的 Conversation 中写入了一条新消息。
+- `agent.activity`：Agent 的排队、开始、Thinking 增量、工具调用、完成、取消或失败状态。
 
 实时通知不代替 HTTP 存储。创建 Conversation 或发送消息仍然使用 HTTP；文件写入成功后才会广播。幂等重试返回已有消息时不会再次广播。客户端重连后应重新请求 Conversation 和当前消息，以恢复断线期间可能错过的数据。
 

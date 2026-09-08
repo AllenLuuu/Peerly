@@ -10,7 +10,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { AgentModel, AgentRuntime } from "@peerly/agent-protocol";
+import type { AgentHost, AgentModel, AgentRuntime } from "@peerly/agent-protocol";
 
 import { createAgentRuntime } from "./create-agent-runtime.js";
 import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
@@ -19,6 +19,7 @@ const OPENAI_COMPATIBLE_PROVIDER = "openai-compatible";
 
 export interface CreateAgentRuntimeFromEnvironmentOptions {
   env?: Readonly<Record<string, string | undefined>>;
+  host?: AgentHost;
 }
 
 export async function createAgentRuntimeFromEnvironment(
@@ -43,7 +44,12 @@ export async function createAgentRuntimeFromEnvironment(
     );
   }
 
-  return createAgentRuntime({ dataDirectory, defaultModel, models });
+  return createAgentRuntime({
+    dataDirectory,
+    defaultModel,
+    models,
+    ...(options.host ? { host: options.host } : {}),
+  });
 }
 
 function openAICompatibleModels(

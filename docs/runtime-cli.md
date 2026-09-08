@@ -1,6 +1,6 @@
 # Runtime CLI 使用说明
 
-Runtime CLI 是 Peerly Agent Runtime 的本地交互工具。它直接调用 Runtime TypeScript 模块，可用于创建第一个 Agent、管理对话 session、验证模型配置，以及进行流式多轮对话。
+Runtime CLI 是 Peerly Agent Runtime 的本地交互工具。它直接调用 Runtime TypeScript 模块，可用于创建第一个 Agent、验证模型配置，以及进行流式多轮对话。
 
 它主要服务于 Agent Runtime 的开发和调试，不是最终的 Peerly 聊天客户端。当前 CLI 不经过 Peerly 后端，也不读写平台公开聊天记录。
 
@@ -12,16 +12,15 @@ Runtime CLI 目前支持：
 - 使用 Pi 内置 provider，或连接带有自定义 Base URL 的 OpenAI-compatible API。
 - 在没有可用 Agent 时创建第一个 Agent。
 - 从已有的已启用 Agent 中选择一个进行对话。
-- 选择已有 session，或创建新 session。
 - 与 Agent 进行流式、多轮对话。
-- 使用 Ctrl+C 取消当前生成，并继续使用同一个 session。
-- 重启 CLI 后恢复 Agent Definition 和 Pi session 历史。
+- 使用 Ctrl+C 取消当前生成，并继续使用同一个 Conversation。
+- 使用与 Peerly 平台相同的消息投递、`reply` 工具和 Conversation session 映射。
 
 当前不支持：
 
 - 在已有 Agent 的情况下继续创建其他 Agent。
 - 在 CLI 中编辑、启用、暂停或删除 Agent。
-- 重命名或删除 session。
+- 选择、重命名或删除历史 Conversation。
 - 查看完整的 Runtime 内部事件、工具调用或 token 用量。
 - 同时操作多个 Agent 或多个 session。
 
@@ -137,9 +136,9 @@ Instructions [Be a helpful assistant.]: Find and summarize reliable information.
 - 直接按 Enter 会采用方括号中的默认值。
 - 模型配置来自 `.env.local`，创建 Agent 时不需要再次输入。
 
-创建完成后，CLI 会自动创建第一个 session 并进入对话。
+创建完成后，CLI 会创建一个测试 Conversation 并进入对话。
 
-## 6. 选择 Agent 和 session
+## 6. 选择 Agent
 
 如果已经存在多个已启用 Agent，CLI 会显示编号列表：
 
@@ -152,54 +151,44 @@ Select Agent [1]:
 
 输入编号并按 Enter。直接按 Enter 选择第一项。已暂停或禁用的 Agent 不会出现在列表中。
 
-如果 Agent 已有 session，CLI 会继续显示：
-
-```text
-Sessions:
-  1. <session-id> (<created-at>)
-  2. New session
-Select session [1]:
-```
-
-- 选择已有 session 会恢复此前的多轮上下文。
-- 选择 `New session` 会创建没有历史上下文的新对话。
-- 如果 Agent 尚无 session，CLI 会自动创建一个。
+CLI 每次启动都会创建一个新的测试 Conversation。Runtime 在第一次收到消息时，才为 `(Agent, Conversation)` 懒创建 Pi session。CLI 不提供历史 Conversation 选择界面，因为它只用于 Runtime 测试。
 
 ## 7. 对话和命令
 
 进入对话后会看到：
 
 ```text
-Commands: /new starts a new session, /exit quits.
+Commands: /new starts a new conversation, /exit quits.
 You>
 ```
 
 Runtime CLI 当前支持两个文本命令：
 
-| 命令    | 作用                                      |
-| ------- | ----------------------------------------- |
-| `/new`  | 为当前 Agent 创建并切换到一个新 session。 |
-| `/exit` | 正常关闭 Runtime 并退出 CLI。             |
+| 命令    | 作用                                               |
+| ------- | -------------------------------------------------- |
+| `/new`  | 为当前 Agent 创建并切换到一个新测试 Conversation。 |
+| `/exit` | 正常关闭 Runtime 并退出 CLI。                      |
 
 除这两个命令外，输入内容都会作为用户消息发送给当前 Agent。命令会忽略首尾空格，但必须单独输入。
 
-Agent 的文本会边生成边显示：
+Agent 的可观测工作过程和正式回复会分别显示：
 
 ```text
 You> 简要介绍 Peerly
+Thinking> 正在整理关键信息……
 Researcher> Peerly 是一个让人类和 Agent 在同一空间协作的平台……
 ```
 
-同一 session 内的消息会保留上下文。`/new` 创建的新 session 与旧 session 相互隔离。
+同一测试 Conversation 内的消息会保留上下文。`/new` 创建的新 Conversation 与旧 Conversation 相互隔离。只有 `reply` 工具传入的文本会显示为 `Researcher>` 正式回复。
 
 ## 8. Ctrl+C 行为
 
 Ctrl+C 会根据 CLI 当前状态执行不同操作：
 
 - Agent 正在生成时：取消当前请求，等待 Pi 把 session 安全地写入终态，然后显示 `Cancelled.` 并返回 `You>`。
-- CLI 正在等待输入、选择 Agent 或选择 session 时：正常关闭并退出，进程退出码为 `0`。
+- CLI 正在等待输入或选择 Agent 时：正常关闭并退出，进程退出码为 `0`。
 
-取消不会删除整个 session。取消完成后可以继续发送消息，也可以退出并在下次启动时恢复该 session。
+取消不会删除整个 session。取消完成后可以继续在当前测试 Conversation 中发送消息。
 
 部分 provider 可能需要短暂时间才能完全停止网络流；CLI 会等待 Pi 完成取消收尾，避免 session 在重启后残留未结束的 operation。
 
@@ -214,10 +203,12 @@ Runtime 数据结构如下：
       definition.json
       sessions/
         sessions.sqlite
+        conversations.json
 ```
 
 - `definition.json` 保存 Agent 名称、instructions、模型标识和启用状态，不保存 API Key。
 - `sessions.sqlite` 由 Pi 官方 SQLite session backend 管理，保存 Agent 的私有对话和执行状态。
+- `conversations.json` 保存 Conversation ID 到 Pi session ID 的映射。
 - CLI 和 Peerly 平台未来展示的公开聊天记录不是同一份数据。
 
 不要手工修改正在使用的 SQLite 文件。同一个数据目录也不应同时由多个 Runtime 进程写入。
@@ -266,8 +257,8 @@ Runtime CLI → Agent Runtime → Pi Agent / Pi Session
 ```text
 run_queued
 → run_started
-→ output_delta × N
+→ thinking_delta / tool_started / tool_completed / reply_published
 → run_completed | run_cancelled | run_failed
 ```
 
-每次调用只有一个终态事件。同一 `(agentId, sessionId)` 的请求按 FIFO 执行，不同 session 可以并行执行。
+每次调用只有一个终态事件。同一 `(agentId, conversationId)` 的请求按 FIFO 执行，不同 Conversation 可以并行执行。

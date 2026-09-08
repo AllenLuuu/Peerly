@@ -9,3 +9,4 @@ data/*
 !data/.gitkeep
 *.log
 apps/runtime-cli/data/
+apps/server/data/

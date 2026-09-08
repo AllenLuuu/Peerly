@@ -74,6 +74,9 @@ export function App({ api, realtime }: AppProps) {
   }
 
   function handleRealtimeEvent(event: PeerlyRealtimeEvent): void {
+    if (event.type === "agent.activity") {
+      return;
+    }
     if (event.type === "conversation.created") {
       setConversations((currentConversations) =>
         mergeConversation(currentConversations, event.conversation),
@@ -151,6 +154,13 @@ export function App({ api, realtime }: AppProps) {
       const principal = await api.createHuman(displayName);
       setPrincipals((currentPrincipals) => [...currentPrincipals, principal]);
       setDevelopmentPrincipals((currentPrincipals) => [...currentPrincipals, principal]);
+    });
+  }
+
+  async function createAgent(displayName: string, instructions: string): Promise<void> {
+    await perform(async () => {
+      const principal = await api.createAgent(displayName, instructions);
+      setPrincipals((currentPrincipals) => [...currentPrincipals, principal]);
     });
   }
 
@@ -232,6 +242,7 @@ export function App({ api, realtime }: AppProps) {
           busy={busy}
           current={current}
           onCreateHuman={createHuman}
+          onCreateAgent={createAgent}
           onStartDirect={startDirect}
           principals={principals}
         />

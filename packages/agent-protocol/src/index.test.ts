@@ -74,8 +74,17 @@ describe("shared response schemas", () => {
       [
         { type: "run_queued", timestamp },
         { type: "run_started", timestamp },
-        { type: "output_delta", timestamp, delta: "Hello" },
-        { type: "run_completed", timestamp, content: "Hello" },
+        { type: "thinking_delta", timestamp, delta: "Hello" },
+        { type: "tool_started", timestamp, toolName: "reply" },
+        { type: "tool_completed", timestamp, toolName: "reply" },
+        {
+          type: "reply_published",
+          timestamp,
+          text: "Hello",
+          messageId: "message-1",
+          createdAt: timestamp,
+        },
+        { type: "run_completed", timestamp, replyCount: 1 },
         { type: "run_cancelled", timestamp },
         {
           type: "run_failed",
@@ -83,9 +92,9 @@ describe("shared response schemas", () => {
           error: { code: "PROVIDER_ERROR", message: "Unavailable" },
         },
       ].map((event) => agentRuntimeEventSchema.parse(event)),
-    ).toHaveLength(6);
+    ).toHaveLength(9);
     expect(
-      agentRuntimeEventSchema.safeParse({ type: "output_delta", timestamp, delta: "" }).success,
+      agentRuntimeEventSchema.safeParse({ type: "thinking_delta", timestamp, delta: "" }).success,
     ).toBe(false);
   });
 });

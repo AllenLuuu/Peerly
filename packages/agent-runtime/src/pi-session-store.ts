@@ -5,10 +5,14 @@ import {
   createNodeSqliteFactory,
   SqliteSessionRepo,
 } from "@earendil-works/pi-session-backend-sqlite-node";
-import type { AgentSession } from "@peerly/agent-protocol";
-
 import { agentSessionsDirectory } from "./agent-paths.js";
 import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
+
+interface AgentSession {
+  id: string;
+  agentId: string;
+  createdAt: string;
+}
 
 export class PiSessionStore {
   private readonly repositories = new Map<string, SqliteSessionRepo>();

@@ -1,7 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type {
+  AgentPrincipal,
   Conversation,
+  CreateAgentPrincipalInput,
   CreateHumanInput,
   HumanPrincipal,
   Message,
@@ -9,6 +11,12 @@ import type {
   Principal,
   SendMessageInput,
 } from "@peerly/contracts";
+import type {
+  DeliverAgentMessageInput,
+  PublishAgentReplyInput,
+  PublishedAgentReply,
+  RuntimeAgentDefinition,
+} from "@peerly/agent-protocol";
 
 import type { PeerlyRepository, PeerlyState } from "./domain.js";
 import { PeerlyError } from "./errors.js";
@@ -24,7 +32,13 @@ interface Delivered<T> extends Created<T> {
 
 export interface PeerlyServiceOptions {
   now?: () => string;
-  generateId?: (prefix: "human" | "conversation" | "message") => string;
+  generateId?: (prefix: "human" | "agent" | "conversation" | "message") => string;
+}
+
+export interface PreparedAgentDelivery {
+  agentPrincipalId: string;
+  recipientIds: string[];
+  input: DeliverAgentMessageInput;
 }
 
 export class PeerlyService {
@@ -64,6 +78,39 @@ export class PeerlyService {
     });
   }
 
+  async registerAgent(
+    input: CreateAgentPrincipalInput,
+    definition: RuntimeAgentDefinition,
+    actorId?: string,
+  ): Promise<AgentPrincipal> {
+    return this.#mutate(async () => {
+      const state = this.#repository.readState();
+      const actor = this.#requireActor(state, actorId);
+      if (actor.type !== "human" || actor.role !== "admin") {
+        throw new PeerlyError("FORBIDDEN", "Only administrators can create Agents", 403);
+      }
+      if (
+        state.principals.some(
+          (principal) => principal.type === "agent" && principal.runtimeAgentId === definition.id,
+        )
+      ) {
+        throw new PeerlyError("INVALID_OPERATION", "Agent is already registered", 409);
+      }
+
+      const principal: AgentPrincipal = {
+        id: this.#generateId("agent"),
+        type: "agent",
+        displayName: input.displayName,
+        runtimeAgentId: definition.id,
+        status: definition.enabled ? "active" : "disabled",
+        createdAt: this.#now(),
+      };
+      state.principals.push(principal);
+      await this.#repository.saveState(state);
+      return principal;
+    });
+  }
+
   getSessionPrincipal(principalId?: string): HumanPrincipal | null {
     if (principalId === undefined) return null;
     const principal = this.#repository
@@ -93,6 +140,14 @@ export class PeerlyService {
         (principal): principal is HumanPrincipal =>
           principal.type === "human" && principal.status === "active",
       );
+  }
+
+  requireAdministrator(actorId?: string): HumanPrincipal {
+    const actor = this.#requireActor(this.#repository.readState(), actorId);
+    if (actor.type !== "human" || actor.role !== "admin") {
+      throw new PeerlyError("FORBIDDEN", "Only administrators can create Agents", 403);
+    }
+    return actor;
   }
 
   async createDirectConversation(
@@ -210,13 +265,80 @@ export class PeerlyService {
     };
   }
 
+  prepareAgentDeliveries(message: Message): PreparedAgentDelivery[] {
+    const state = this.#repository.readState();
+    const conversation = this.#requireConversation(state, message.conversationId);
+    const sender = state.principals.find((principal) => principal.id === message.senderId);
+    if (!sender) throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Message sender not found", 404);
+
+    return conversation.participantIds.flatMap((principalId) => {
+      const principal = state.principals.find((candidate) => candidate.id === principalId);
+      if (
+        principal?.type !== "agent" ||
+        principal.status !== "active" ||
+        principal.id === message.senderId
+      ) {
+        return [];
+      }
+      return [
+        {
+          agentPrincipalId: principal.id,
+          recipientIds: [...conversation.participantIds],
+          input: {
+            deliveryId: `delivery_${message.id}_${principal.id}`,
+            agentId: principal.runtimeAgentId,
+            conversation: { id: conversation.id, type: conversation.type },
+            messages: [
+              {
+                id: message.id,
+                sender: { id: sender.id, type: sender.type, name: sender.displayName },
+                createdAt: message.createdAt,
+                content: message.content,
+              },
+            ],
+          },
+        },
+      ];
+    });
+  }
+
+  async publishAgentReply(input: PublishAgentReplyInput): Promise<{
+    result: Delivered<Message>;
+    published: PublishedAgentReply;
+  }> {
+    const principal = this.#repository
+      .readState()
+      .principals.find(
+        (candidate): candidate is AgentPrincipal =>
+          candidate.type === "agent" &&
+          candidate.runtimeAgentId === input.runtimeAgentId &&
+          candidate.status === "active",
+      );
+    if (!principal) {
+      throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active Agent principal not found", 404);
+    }
+    const result = await this.sendMessage(principal.id, input.conversationId, {
+      clientMessageId: replyClientMessageId(input),
+      content: { type: "text", text: input.text },
+    });
+    return {
+      result,
+      published: { messageId: result.value.id, createdAt: result.value.createdAt },
+    };
+  }
+
+  requireConversationAccess(actorId: string | undefined, conversationId: string): void {
+    const state = this.#repository.readState();
+    const actor = this.#requireActor(state, actorId);
+    this.#requireParticipant(this.#requireConversation(state, conversationId), actor.id);
+  }
+
   #requireActor(state: PeerlyState, actorId?: string): Principal {
     if (actorId === undefined) {
       throw new PeerlyError("AUTHENTICATION_REQUIRED", "Authentication is required", 401);
     }
     const principal = state.principals.find((candidate) => candidate.id === actorId);
-    const active =
-      principal !== undefined && (principal.type === "agent" || principal.status === "active");
+    const active = principal !== undefined && principal.status === "active";
     if (!active) {
       throw new PeerlyError("AUTHENTICATION_REQUIRED", "Authentication is required", 401);
     }
@@ -225,8 +347,7 @@ export class PeerlyService {
 
   #findActivePrincipal(state: PeerlyState, principalId: string): Principal {
     const principal = state.principals.find((candidate) => candidate.id === principalId);
-    const active =
-      principal !== undefined && (principal.type === "agent" || principal.status === "active");
+    const active = principal !== undefined && principal.status === "active";
     if (!active) {
       throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active principal not found", 404);
     }
@@ -255,4 +376,11 @@ export class PeerlyService {
     );
     return result;
   }
+}
+
+function replyClientMessageId(input: PublishAgentReplyInput): string {
+  const digest = createHash("sha256")
+    .update(`${input.deliveryId}\u0000${input.replyIndex}`)
+    .digest("hex");
+  return `agent-reply-${digest}`;
 }

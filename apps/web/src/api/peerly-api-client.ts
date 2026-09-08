@@ -7,6 +7,7 @@ import {
   principalResponseSchema,
   sessionResponseSchema,
   type Conversation,
+  type AgentPrincipal,
   type HumanPrincipal,
   type Message,
   type MessagePage,
@@ -23,11 +24,13 @@ export interface PeerlyApi {
   listDevelopmentPrincipals(): Promise<HumanPrincipal[]>;
   selectSession(principalId: string): Promise<HumanPrincipal>;
   createHuman(displayName: string): Promise<HumanPrincipal>;
+  createAgent(displayName: string, instructions: string): Promise<AgentPrincipal>;
   listPrincipals(): Promise<Principal[]>;
   listConversations(): Promise<Conversation[]>;
   createDirectConversation(participantId: string): Promise<Conversation>;
   listMessages(conversationId: string): Promise<MessagePage>;
   sendMessage(conversationId: string, input: SendMessageInput): Promise<Message>;
+  cancelAgentDelivery(deliveryId: string): Promise<void>;
 }
 
 export class HttpPeerlyApi implements PeerlyApi {
@@ -56,6 +59,15 @@ export class HttpPeerlyApi implements PeerlyApi {
       body: JSON.stringify({ displayName }),
     });
     return requireHuman(result.principal);
+  }
+
+  async createAgent(displayName: string, instructions: string): Promise<AgentPrincipal> {
+    const result = await request("/api/principals/agents", principalResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ displayName, instructions }),
+    });
+    if (result.principal.type !== "agent") throw new Error("服务端未返回 Agent 成员");
+    return result.principal;
   }
 
   async listPrincipals(): Promise<Principal[]> {
@@ -91,6 +103,14 @@ export class HttpPeerlyApi implements PeerlyApi {
       )
     ).message;
   }
+
+  async cancelAgentDelivery(deliveryId: string): Promise<void> {
+    await request(
+      `/api/agent-deliveries/${encodeURIComponent(deliveryId)}/cancel`,
+      { parse: () => undefined },
+      { method: "POST" },
+    );
+  }
 }
 
 async function request<T>(
@@ -106,7 +126,13 @@ async function request<T>(
       ...init.headers,
     },
   });
-  const body: unknown = await response.json();
+  const responseText = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(responseText);
+  } catch {
+    throw new Error("服务端未返回有效 JSON，请确认 Peerly 后端是否已启动");
+  }
   if (!response.ok) {
     const message = readErrorMessage(body);
     throw new Error(message);

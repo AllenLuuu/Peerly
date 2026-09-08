@@ -2,19 +2,15 @@ import type { Models } from "@earendil-works/pi-ai";
 import {
   agentIdSchema,
   createAgentInputSchema,
-  createAgentSessionInputSchema,
-  deleteAgentSessionInputSchema,
-  sendAgentMessageInputSchema,
+  deliverAgentMessageInputSchema,
   updateAgentInputSchema,
+  type AgentHost,
   type AgentRuntime,
   type AgentRuntimeEventStream,
-  type AgentSession,
   type CreateAgentInput,
-  type CreateAgentSessionInput,
-  type DeleteAgentSessionInput,
+  type DeliverAgentMessageInput,
+  type DeliverMessageOptions,
   type RuntimeAgentDefinition,
-  type SendAgentMessageInput,
-  type SendMessageOptions,
   type UpdateAgentInput,
 } from "@peerly/agent-protocol";
 import type { ZodType } from "zod";
@@ -22,6 +18,7 @@ import type { ZodType } from "zod";
 import type { AgentDefinitionService } from "./agent-definition-service.js";
 import { AgentRunCoordinator } from "./agent-run-coordinator.js";
 import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
+import { ConversationSessionIndex } from "./conversation-session-index.js";
 import { PiMessageRunner } from "./pi-message-runner.js";
 import { PiSessionStore } from "./pi-session-store.js";
 
@@ -35,10 +32,17 @@ export class PiAgentRuntime implements AgentRuntime {
     private readonly definitions: AgentDefinitionService,
     dataDirectory: string,
     models: Models,
+    host: AgentHost,
   ) {
     this.sessions = new PiSessionStore(dataDirectory);
     this.runs = new AgentRunCoordinator(
-      new PiMessageRunner(this.definitions, this.sessions, models),
+      new PiMessageRunner(
+        this.definitions,
+        this.sessions,
+        new ConversationSessionIndex(dataDirectory, this.sessions),
+        models,
+        host,
+      ),
     );
   }
 
@@ -72,33 +76,12 @@ export class PiAgentRuntime implements AgentRuntime {
     this.runs.cancelAgent(agentId);
   }
 
-  async createSession(input: CreateAgentSessionInput): Promise<AgentSession> {
-    this.assertOpen();
-    const parsed = parseInput(createAgentSessionInputSchema, input);
-    await this.getEnabledAgent(parsed.agentId);
-    return this.sessions.create(parsed.agentId);
-  }
-
-  async listSessions(agentId: string): Promise<AgentSession[]> {
-    this.assertOpen();
-    const parsedAgentId = parseInput(agentIdSchema, agentId);
-    await this.definitions.get(parsedAgentId);
-    return this.sessions.list(parsedAgentId);
-  }
-
-  async deleteSession(input: DeleteAgentSessionInput): Promise<void> {
-    this.assertOpen();
-    const parsed = parseInput(deleteAgentSessionInputSchema, input);
-    await this.definitions.get(parsed.agentId);
-    return this.sessions.delete(parsed.agentId, parsed.sessionId);
-  }
-
-  sendMessage(
-    input: SendAgentMessageInput,
-    options: SendMessageOptions = {},
+  deliverMessage(
+    input: DeliverAgentMessageInput,
+    options: DeliverMessageOptions = {},
   ): AgentRuntimeEventStream {
     this.assertOpen();
-    return this.runs.sendMessage(parseInput(sendAgentMessageInputSchema, input), options);
+    return this.runs.deliverMessage(parseInput(deliverAgentMessageInputSchema, input), options);
   }
 
   close(): Promise<void> {
@@ -110,14 +93,6 @@ export class PiAgentRuntime implements AgentRuntime {
         .then(() => undefined);
     }
     return this.closePromise;
-  }
-
-  private async getEnabledAgent(agentId: string): Promise<RuntimeAgentDefinition> {
-    const agent = await this.definitions.get(agentId);
-    if (!agent.enabled) {
-      throw new AgentRuntimeOperationError("AGENT_DISABLED", `Agent ${agentId} is disabled`);
-    }
-    return agent;
   }
 
   private assertOpen(): void {

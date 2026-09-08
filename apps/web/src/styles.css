@@ -309,6 +309,30 @@ textarea:focus {
   border-bottom: 1px solid #e3e7e5;
 }
 
+.member-forms {
+  border-bottom: 1px solid #e3e7e5;
+}
+
+.member-forms .member-form {
+  border-bottom: 0;
+}
+
+.agent-form {
+  display: grid;
+  gap: 7px;
+  padding: 0 12px 12px;
+}
+
+.agent-form button {
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: #5b4a7e;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .member-form input {
   min-width: 0;
 }

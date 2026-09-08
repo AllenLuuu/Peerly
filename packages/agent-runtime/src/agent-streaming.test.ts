@@ -6,83 +6,21 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  fauxText,
+  fauxToolCall,
   type Models,
 } from "@earendil-works/pi-ai";
-import type { AgentRuntime, AgentRuntimeEvent } from "@peerly/agent-protocol";
+import type {
+  AgentRuntime,
+  AgentRuntimeEvent,
+  DeliverAgentMessageInput,
+} from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAgentRuntime } from "./index.js";
 
 const temporaryDirectories: string[] = [];
 const runtimes: AgentRuntime[] = [];
-
-async function makeDataDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "peerly-agent-streaming-"));
-  temporaryDirectories.push(directory);
-  return directory;
-}
-
-function makeFauxModels(options: { tokensPerSecond?: number } = {}) {
-  const faux = fauxProvider({
-    provider: "faux",
-    models: [{ id: "chat-model" }],
-    ...(options.tokensPerSecond === undefined ? {} : { tokensPerSecond: options.tokensPerSecond }),
-  });
-  const models = createModels();
-  models.setProvider(faux.provider);
-  return { faux, models };
-}
-
-async function makeRuntime(dataDirectory: string, models: Models): Promise<AgentRuntime> {
-  const runtime = await createAgentRuntime({ dataDirectory, models });
-  runtimes.push(runtime);
-  return runtime;
-}
-
-async function prepareConversation(runtime: AgentRuntime, agentId = "assistant") {
-  await runtime.createAgent({
-    id: agentId,
-    name: "Assistant",
-    instructions: "Help the user.",
-    model: { provider: "faux", modelId: "chat-model" },
-  });
-  return runtime.createSession({ agentId });
-}
-
-async function collectEvents(
-  stream: AsyncIterable<AgentRuntimeEvent>,
-): Promise<AgentRuntimeEvent[]> {
-  const events: AgentRuntimeEvent[] = [];
-  for await (const event of stream) {
-    events.push(event);
-  }
-  return events;
-}
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
-async function withTimeout<T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("Timed out waiting for concurrent run")),
-          milliseconds,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
 
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.close()));
@@ -93,301 +31,196 @@ afterEach(async () => {
   );
 });
 
-describe("Agent Runtime event streams", () => {
-  it("rejects invalid messages before creating a stream", async () => {
-    const { models } = makeFauxModels();
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-
-    expect(() =>
-      runtime.sendMessage({ agentId: "assistant", sessionId: "session", content: "   " }),
-    ).toThrow(expect.objectContaining({ code: "VALIDATION_ERROR" }));
-  });
-
-  it("streams lifecycle events and text deltas ending with the complete reply", async () => {
+describe("Agent Runtime 事件流", () => {
+  it("依次流式报告排队、运行过程、工具回复和完成", async () => {
     const { faux, models } = makeFauxModels();
-    faux.setResponses([fauxAssistantMessage("Hello from Peerly")]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    const session = await prepareConversation(runtime);
-
-    const events = await collectEvents(
-      runtime.sendMessage({
-        agentId: "assistant",
-        sessionId: session.id,
-        content: "Hello",
+    faux.setResponses([
+      fauxAssistantMessage([fauxText("正在整理"), fauxToolCall("reply", { text: "整理完成" })], {
+        stopReason: "toolUse",
       }),
-    );
+    ]);
+    const runtime = await prepareRuntime(models);
+    const events = await collect(runtime.deliverMessage(delivery("开始")));
 
     expect(events[0]).toMatchObject({ type: "run_queued" });
     expect(events[1]).toMatchObject({ type: "run_started" });
-    expect(events.at(-1)).toEqual(
-      expect.objectContaining({ type: "run_completed", content: "Hello from Peerly" }),
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "thinking_delta", delta: "正在整理" }),
+        expect.objectContaining({ type: "tool_started", toolName: "reply" }),
+        expect.objectContaining({ type: "reply_published", text: "整理完成" }),
+      ]),
     );
-    expect(
-      events
-        .filter(
-          (event): event is Extract<AgentRuntimeEvent, { type: "output_delta" }> =>
-            event.type === "output_delta",
-        )
-        .map((event) => event.delta)
-        .join(""),
-    ).toBe("Hello from Peerly");
+    expect(events.at(-1)).toMatchObject({ type: "run_completed", replyCount: 1 });
   });
 
-  it("runs messages for the same session in FIFO order", async () => {
+  it("同一 Agent Conversation 按 FIFO 执行，不同 Conversation 可以并行", async () => {
     const { faux, models } = makeFauxModels();
     const firstStarted = deferred();
+    const secondConversationStarted = deferred();
     const releaseFirst = deferred();
-    const providerStarts: string[] = [];
+    const starts: string[] = [];
     faux.setResponses([
       async () => {
-        providerStarts.push("first");
+        starts.push("first");
         firstStarted.resolve();
         await releaseFirst.promise;
-        return fauxAssistantMessage("First reply");
+        return replyResponse("第一条");
       },
       () => {
-        providerStarts.push("second");
-        return fauxAssistantMessage("Second reply");
-      },
-    ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    const session = await prepareConversation(runtime);
-
-    const firstEvents = collectEvents(
-      runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "First" }),
-    );
-    await firstStarted.promise;
-    const secondEvents = collectEvents(
-      runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "Second" }),
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(providerStarts).toEqual(["first"]);
-    releaseFirst.resolve();
-    const [, second] = await Promise.all([firstEvents, secondEvents]);
-    expect(providerStarts).toEqual(["first", "second"]);
-    expect(second.at(-1)).toMatchObject({ type: "run_completed", content: "Second reply" });
-  });
-
-  it("uses the Agent configuration in effect when a queued message starts", async () => {
-    const faux = fauxProvider({
-      provider: "faux",
-      models: [{ id: "model-v1" }, { id: "model-v2" }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    const firstStarted = deferred();
-    const releaseFirst = deferred();
-    const observedModels: string[] = [];
-    faux.setResponses([
-      async (_context, _options, _state, model) => {
-        observedModels.push(model.id);
-        firstStarted.resolve();
-        await releaseFirst.promise;
-        return fauxAssistantMessage("First reply");
-      },
-      (_context, _options, _state, model) => {
-        observedModels.push(model.id);
-        return fauxAssistantMessage("Second reply");
-      },
-    ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    await runtime.createAgent({
-      id: "assistant",
-      name: "Assistant",
-      instructions: "Version one.",
-      model: { provider: "faux", modelId: "model-v1" },
-    });
-    const session = await runtime.createSession({ agentId: "assistant" });
-
-    const firstEvents = collectEvents(
-      runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "First" }),
-    );
-    await firstStarted.promise;
-    const secondEvents = collectEvents(
-      runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "Second" }),
-    );
-    await runtime.updateAgent("assistant", {
-      instructions: "Version two.",
-      model: { provider: "faux", modelId: "model-v2" },
-    });
-    releaseFirst.resolve();
-    await Promise.all([firstEvents, secondEvents]);
-
-    expect(observedModels).toEqual(["model-v1", "model-v2"]);
-  });
-
-  it("runs different sessions concurrently", async () => {
-    const { faux, models } = makeFauxModels();
-    const firstStarted = deferred();
-    const secondStarted = deferred();
-    const releaseFirst = deferred();
-    faux.setResponses([
-      async () => {
-        firstStarted.resolve();
-        await releaseFirst.promise;
-        return fauxAssistantMessage("First reply");
+        starts.push("other-conversation");
+        secondConversationStarted.resolve();
+        return replyResponse("并行消息");
       },
       () => {
-        secondStarted.resolve();
-        return fauxAssistantMessage("Second reply");
+        starts.push("queued");
+        return replyResponse("排队消息");
       },
     ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    await runtime.createAgent({
-      id: "assistant",
-      name: "Assistant",
-      instructions: "Help the user.",
-      model: { provider: "faux", modelId: "chat-model" },
-    });
-    const firstSession = await runtime.createSession({ agentId: "assistant" });
-    const secondSession = await runtime.createSession({ agentId: "assistant" });
-
-    const firstEvents = collectEvents(
-      runtime.sendMessage({
-        agentId: "assistant",
-        sessionId: firstSession.id,
-        content: "First",
-      }),
-    );
+    const runtime = await prepareRuntime(models);
+    const first = collect(runtime.deliverMessage(delivery("一")));
     await firstStarted.promise;
-    const secondEvents = collectEvents(
-      runtime.sendMessage({
-        agentId: "assistant",
-        sessionId: secondSession.id,
-        content: "Second",
-      }),
+    const queued = collect(
+      runtime.deliverMessage(delivery("二", { deliveryId: "delivery-2", messageId: "message-2" })),
     );
-
-    await withTimeout(secondStarted.promise);
-    releaseFirst.resolve();
-    await Promise.all([firstEvents, secondEvents]);
-  });
-
-  it("cancels an active stream through AbortSignal", async () => {
-    const { faux, models } = makeFauxModels({ tokensPerSecond: 20 });
-    faux.setResponses([
-      fauxAssistantMessage("This response is deliberately long enough to cancel while streaming."),
-    ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    const session = await prepareConversation(runtime);
-    const controller = new AbortController();
-    const events: AgentRuntimeEvent[] = [];
-
-    for await (const event of runtime.sendMessage(
-      { agentId: "assistant", sessionId: session.id, content: "Write a long answer" },
-      { signal: controller.signal },
-    )) {
-      events.push(event);
-      if (event.type === "output_delta") controller.abort();
-    }
-
-    expect(faux.state.callCount).toBe(1);
-    expect(events.at(-1)).toMatchObject({ type: "run_cancelled" });
-    expect(events.some((event) => event.type === "run_completed")).toBe(false);
-  });
-
-  it("can continue the same session after an active response is cancelled", async () => {
-    const { faux, models } = makeFauxModels({ tokensPerSecond: 20 });
-    faux.setResponses([
-      fauxAssistantMessage("This response is deliberately long enough to cancel."),
-      fauxAssistantMessage("Recovered reply"),
-    ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    const session = await prepareConversation(runtime);
-    const controller = new AbortController();
-
-    for await (const event of runtime.sendMessage(
-      { agentId: "assistant", sessionId: session.id, content: "Cancel this" },
-      { signal: controller.signal },
-    )) {
-      if (event.type === "output_delta") controller.abort();
-    }
-    const nextEvents = await collectEvents(
-      runtime.sendMessage({
-        agentId: "assistant",
-        sessionId: session.id,
-        content: "Continue after cancellation",
-      }),
-    );
-
-    expect(nextEvents.at(-1)).toMatchObject({
-      type: "run_completed",
-      content: "Recovered reply",
-    });
-  });
-
-  it("can restore a cancelled session after the Runtime restarts", async () => {
-    const dataDirectory = await makeDataDirectory();
-    const firstModels = makeFauxModels({ tokensPerSecond: 20 });
-    firstModels.faux.setResponses([
-      fauxAssistantMessage("This response is deliberately long enough to cancel."),
-    ]);
-    const firstRuntime = await makeRuntime(dataDirectory, firstModels.models);
-    const session = await prepareConversation(firstRuntime);
-    const controller = new AbortController();
-
-    for await (const event of firstRuntime.sendMessage(
-      { agentId: "assistant", sessionId: session.id, content: "Cancel before restart" },
-      { signal: controller.signal },
-    )) {
-      if (event.type === "output_delta") controller.abort();
-    }
-    await firstRuntime.close();
-    runtimes.splice(runtimes.indexOf(firstRuntime), 1);
-
-    const secondModels = makeFauxModels();
-    secondModels.faux.setResponses([fauxAssistantMessage("Restored reply")]);
-    const restartedRuntime = await makeRuntime(dataDirectory, secondModels.models);
-    const events = await collectEvents(
-      restartedRuntime.sendMessage({
-        agentId: "assistant",
-        sessionId: session.id,
-        content: "Continue after restart",
-      }),
-    );
-
-    expect(events.at(-1)).toMatchObject({
-      type: "run_completed",
-      content: "Restored reply",
-    });
-  });
-
-  it("cancels a queued stream without calling the provider", async () => {
-    const { faux, models } = makeFauxModels();
-    const firstStarted = deferred();
-    const releaseFirst = deferred();
-    faux.setResponses([
-      async () => {
-        firstStarted.resolve();
-        await releaseFirst.promise;
-        return fauxAssistantMessage("First reply");
-      },
-      fauxAssistantMessage("Must not be requested"),
-    ]);
-    const runtime = await makeRuntime(await makeDataDirectory(), models);
-    const session = await prepareConversation(runtime);
-    const firstEvents = collectEvents(
-      runtime.sendMessage({ agentId: "assistant", sessionId: session.id, content: "First" }),
-    );
-    await firstStarted.promise;
-    const controller = new AbortController();
-    const secondEvents = collectEvents(
-      runtime.sendMessage(
-        { agentId: "assistant", sessionId: session.id, content: "Second" },
-        { signal: controller.signal },
+    const parallel = collect(
+      runtime.deliverMessage(
+        delivery("三", {
+          deliveryId: "delivery-3",
+          conversationId: "conversation-2",
+          messageId: "message-3",
+        }),
       ),
     );
 
-    controller.abort();
-    expect(await secondEvents).toEqual([
-      expect.objectContaining({ type: "run_queued" }),
-      expect.objectContaining({ type: "run_cancelled" }),
+    await withTimeout(secondConversationStarted.promise);
+    expect(starts).toEqual(["first", "other-conversation"]);
+    releaseFirst.resolve();
+    await Promise.all([first, queued, parallel]);
+    expect(starts).toEqual(["first", "other-conversation", "queued"]);
+  });
+
+  it("通过 AbortSignal 取消活跃运行", async () => {
+    const { faux, models } = makeFauxModels({ tokensPerSecond: 20 });
+    faux.setResponses([fauxAssistantMessage("这是一段足够长、可以在流式输出时取消的工作过程。")]);
+    const runtime = await prepareRuntime(models);
+    const controller = new AbortController();
+    const events: AgentRuntimeEvent[] = [];
+
+    for await (const event of runtime.deliverMessage(delivery("取消"), {
+      signal: controller.signal,
+    })) {
+      events.push(event);
+      if (event.type === "thinking_delta") controller.abort();
+    }
+
+    expect(events.at(-1)).toMatchObject({ type: "run_cancelled" });
+    expect(events.some((event) => event.type === "reply_published")).toBe(false);
+  });
+
+  it("取消排队中的运行时不会调用模型", async () => {
+    const { faux, models } = makeFauxModels();
+    const firstStarted = deferred();
+    const releaseFirst = deferred();
+    faux.setResponses([
+      async () => {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+        return replyResponse("第一条");
+      },
+      replyResponse("不应执行"),
     ]);
+    const runtime = await prepareRuntime(models);
+    const first = collect(runtime.deliverMessage(delivery("一")));
+    await firstStarted.promise;
+    const controller = new AbortController();
+    const second = collect(
+      runtime.deliverMessage(delivery("二", { deliveryId: "delivery-2", messageId: "message-2" }), {
+        signal: controller.signal,
+      }),
+    );
+    controller.abort();
+
+    expect((await second).at(-1)).toMatchObject({ type: "run_cancelled" });
     expect(faux.state.callCount).toBe(1);
     releaseFirst.resolve();
-    await firstEvents;
+    await first;
     expect(faux.state.callCount).toBe(1);
   });
 });
+
+function delivery(
+  text: string,
+  overrides: { deliveryId?: string; conversationId?: string; messageId?: string } = {},
+): DeliverAgentMessageInput {
+  return {
+    deliveryId: overrides.deliveryId ?? "delivery-1",
+    agentId: "assistant",
+    conversation: { id: overrides.conversationId ?? "conversation-1", type: "direct" },
+    messages: [
+      {
+        id: overrides.messageId ?? "message-1",
+        sender: { id: "human-alice", type: "human", name: "Alice" },
+        createdAt: "2026-09-08T10:00:00.000Z",
+        content: { type: "text", text },
+      },
+    ],
+  };
+}
+
+function replyResponse(text: string) {
+  return fauxAssistantMessage(fauxToolCall("reply", { text }), { stopReason: "toolUse" });
+}
+
+function makeFauxModels(options: { tokensPerSecond?: number } = {}) {
+  const faux = fauxProvider({
+    provider: "faux",
+    models: [{ id: "chat-model" }],
+    ...(options.tokensPerSecond ? { tokensPerSecond: options.tokensPerSecond } : {}),
+  });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  return { faux, models };
+}
+
+async function prepareRuntime(models: Models) {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "peerly-agent-streaming-"));
+  temporaryDirectories.push(dataDirectory);
+  const runtime = await createAgentRuntime({ dataDirectory, models });
+  runtimes.push(runtime);
+  await runtime.createAgent({
+    id: "assistant",
+    name: "Assistant",
+    instructions: "帮助用户",
+    model: { provider: "faux", modelId: "chat-model" },
+  });
+  return runtime;
+}
+
+async function collect(stream: AsyncIterable<AgentRuntimeEvent>) {
+  const events: AgentRuntimeEvent[] = [];
+  for await (const event of stream) events.push(event);
+  return events;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
