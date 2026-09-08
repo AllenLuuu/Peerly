@@ -5,15 +5,17 @@ import type { Readable, Writable } from "node:stream";
 import type { RuntimeCliTerminal } from "./cli.js";
 
 export class NodeTerminal implements RuntimeCliTerminal {
+  private readonly input: Readable;
   private readonly readline: Interface;
   private readonly output: Writable;
   private closed = false;
   private activeReadController: AbortController | undefined;
 
   constructor(options: { input?: Readable; output?: Writable } = {}) {
+    this.input = options.input ?? stdin;
     this.output = options.output ?? stdout;
     this.readline = createInterface({
-      input: options.input ?? stdin,
+      input: this.input,
       output: this.output,
       terminal: true,
     });
@@ -38,8 +40,25 @@ export class NodeTerminal implements RuntimeCliTerminal {
   }
 
   onInterrupt(handler: () => void): () => void {
-    this.readline.on("SIGINT", handler);
-    return () => this.readline.off("SIGINT", handler);
+    let handling = false;
+    const invokeOnce = () => {
+      if (handling) return;
+      handling = true;
+      queueMicrotask(() => {
+        handling = false;
+      });
+      handler();
+    };
+    const handlePipedInput = (chunk: unknown) => {
+      if (String(chunk).includes("\u0003")) invokeOnce();
+    };
+
+    this.readline.on("SIGINT", invokeOnce);
+    if (!isTerminalInput(this.input)) this.input.on("data", handlePipedInput);
+    return () => {
+      this.readline.off("SIGINT", invokeOnce);
+      this.input.off("data", handlePipedInput);
+    };
   }
 
   close(): void {
@@ -47,5 +66,16 @@ export class NodeTerminal implements RuntimeCliTerminal {
     this.closed = true;
     this.activeReadController?.abort();
     this.readline.close();
+    this.input.pause();
+    unrefInput(this.input);
   }
+}
+
+function isTerminalInput(input: Readable): boolean {
+  return "isTTY" in input && input.isTTY === true;
+}
+
+function unrefInput(input: Readable): void {
+  const unref = Reflect.get(input, "unref");
+  if (typeof unref === "function") unref.call(input);
 }

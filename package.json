@@ -9,17 +9,17 @@
     "pnpm": ">=11 <12"
   },
   "scripts": {
-    "build": "pnpm -r --if-present build",
-    "dev": "pnpm --parallel --filter @peerly/server --filter @peerly/web dev",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint": "eslint .",
-    "runtime:cli": "pnpm --filter @peerly/runtime-cli... build && pnpm --filter @peerly/runtime-cli start",
-    "server:start": "pnpm --filter @peerly/server... build && pnpm --filter @peerly/server start",
-    "smoke:agent": "pnpm --filter @peerly/server... build && node --env-file-if-exists=.env.local scripts/agent-chat-smoke.mjs",
-    "smoke:counting": "pnpm --filter @peerly/server... build && node --env-file-if-exists=.env.local scripts/agent-counting-smoke.mjs",
-    "test": "vitest run",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "build": "node scripts/run.mjs build",
+    "dev": "node scripts/run.mjs dev",
+    "format": "node scripts/run.mjs format",
+    "format:check": "node scripts/run.mjs format:check",
+    "lint": "node scripts/run.mjs lint",
+    "runtime:cli": "node scripts/run.mjs runtime:cli",
+    "server:start": "node scripts/run.mjs server:start",
+    "smoke:agent": "node scripts/run.mjs smoke:agent",
+    "smoke:counting": "node scripts/run.mjs smoke:counting",
+    "test": "node scripts/run.mjs test",
+    "typecheck": "node scripts/run.mjs typecheck"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
