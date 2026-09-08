@@ -81,7 +81,9 @@ describe("Agent Runtime 事件流", () => {
     const first = collect(runtime.deliverMessage(delivery("一")));
     await firstStarted.promise;
     const queued = collect(
-      runtime.deliverMessage(delivery("二", { deliveryId: "delivery-2", messageId: "message-2" })),
+      runtime.deliverMessage(
+        delivery("二", { deliveryId: "delivery-2", messageId: "message-2", sequence: 3 }),
+      ),
     );
     const parallel = collect(
       runtime.deliverMessage(
@@ -151,7 +153,12 @@ describe("Agent Runtime 事件流", () => {
 
 function delivery(
   text: string,
-  overrides: { deliveryId?: string; conversationId?: string; messageId?: string } = {},
+  overrides: {
+    deliveryId?: string;
+    conversationId?: string;
+    messageId?: string;
+    sequence?: number;
+  } = {},
 ): DeliverAgentMessageInput {
   return {
     deliveryId: overrides.deliveryId ?? "delivery-1",
@@ -161,6 +168,7 @@ function delivery(
     messages: [
       {
         id: overrides.messageId ?? "message-1",
+        sequence: overrides.sequence ?? Number(overrides.messageId?.match(/\d+$/)?.[0] ?? 1),
         sender: { id: "human-alice", type: "human", name: "Alice" },
         createdAt: "2026-09-08T10:00:00.000Z",
         content: { type: "text", text },

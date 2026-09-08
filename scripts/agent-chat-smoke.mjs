@@ -41,7 +41,7 @@ try {
     cookie: sessionCookie,
     body: {
       displayName: "Smoke Test Agent",
-      instructions: "简洁、准确地回复测试消息。",
+      instructions: "简洁、准确地回复测试消息。普通群消息没有要求你发言时保持沉默。",
     },
   });
   const agent = (await agentResponse.json()).principal;
@@ -78,7 +78,7 @@ try {
     cookie: sessionCookie,
     body: {
       clientMessageId: "real-model-group-ordinary",
-      content: { type: "text", text: "这是一条不应触发 Agent 的普通群消息。" },
+      content: { type: "text", text: "这是一条普通群消息，不需要回复。" },
     },
   });
   await delay(500);
@@ -88,7 +88,7 @@ try {
     { cookie: sessionCookie },
   );
   const ordinaryMessages = (await ordinaryMessagesResponse.json()).items;
-  if (ordinaryMessages.length !== 1) throw new Error("普通群消息错误地触发了 Agent 回复");
+  if (ordinaryMessages.length !== 1) throw new Error("Agent 没有选择在无需回复时保持沉默");
 
   await request(address, `/api/conversations/${group.id}/messages`, {
     method: "POST",

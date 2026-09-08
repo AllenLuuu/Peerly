@@ -53,7 +53,11 @@ describe("Agent Runtime Conversation session", () => {
     const restarted = await makeRuntime(dataDirectory, secondModels.models);
     const events = await collect(
       restarted.deliverMessage(
-        delivery("项目叫什么？", { deliveryId: "delivery-2", messageId: "message-2" }),
+        delivery("项目叫什么？", {
+          deliveryId: "delivery-2",
+          messageId: "message-2",
+          sequence: 3,
+        }),
       ),
     );
 
@@ -94,7 +98,9 @@ describe("Agent Runtime Conversation session", () => {
       model: { provider: "faux", modelId: "model-v2" },
     });
     await collect(
-      runtime.deliverMessage(delivery("二", { deliveryId: "delivery-2", messageId: "message-2" })),
+      runtime.deliverMessage(
+        delivery("二", { deliveryId: "delivery-2", messageId: "message-2", sequence: 3 }),
+      ),
     );
 
     expect(observed[0]).toMatchObject({
@@ -147,6 +153,7 @@ function delivery(
     deliveryId?: string;
     conversationId?: string;
     messageId?: string;
+    sequence?: number;
   } = {},
 ): DeliverAgentMessageInput {
   return {
@@ -157,6 +164,7 @@ function delivery(
     messages: [
       {
         id: overrides.messageId ?? "message-1",
+        sequence: overrides.sequence ?? Number(overrides.messageId?.match(/\d+$/)?.[0] ?? 1),
         sender: { id: "human-alice", type: "human", name: "Alice" },
         createdAt: "2026-09-08T10:00:00.000Z",
         content: { type: "text", text },
@@ -191,10 +199,13 @@ function makeFauxModels() {
 
 async function makeRuntime(dataDirectory: string, models: Models) {
   const host: AgentHost = {
-    async publishReply(input) {
+    async attemptReply(input) {
       return {
+        status: "published",
         messageId: `${input.deliveryId}-${input.replyIndex}`,
+        sequence: input.expectedSequence + 1,
         createdAt: new Date().toISOString(),
+        messages: [],
       };
     },
   };

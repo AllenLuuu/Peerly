@@ -48,10 +48,13 @@ export async function createAgentRuntime(
 
 function standaloneHost(): AgentHost {
   return {
-    async publishReply() {
+    async attemptReply(input) {
       return {
+        status: "published",
         messageId: `standalone_${randomUUID()}`,
+        sequence: input.expectedSequence + 1,
         createdAt: new Date().toISOString(),
+        messages: [],
       };
     },
   };

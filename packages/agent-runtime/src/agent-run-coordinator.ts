@@ -6,6 +6,7 @@ import type {
   DeliverMessageOptions,
 } from "@peerly/agent-protocol";
 
+import { AgentConversationMailbox } from "./agent-conversation-mailbox.js";
 import { BufferedEventStream } from "./agent-event-stream.js";
 import { AgentRuntimeOperationError } from "./agent-runtime-operation-error.js";
 import { MessageRunCancelledError, type PiMessageRunner } from "./pi-message-runner.js";
@@ -22,6 +23,7 @@ export class AgentRunCoordinator {
   private readonly messageQueues = new Map<string, PendingMessageRun[]>();
   private readonly sessionDrains = new Map<string, Promise<void>>();
   private readonly activeRuns = new Set<PendingMessageRun>();
+  private readonly mailboxes = new Map<string, AgentConversationMailbox>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
 
@@ -36,6 +38,10 @@ export class AgentRunCoordinator {
     }
 
     const stream = new BufferedEventStream<AgentRuntimeEvent>();
+    const queueKey = conversationQueueKey(input.agentId, input.conversation.id);
+    const mailbox = this.mailboxes.get(queueKey) ?? new AgentConversationMailbox();
+    mailbox.enqueue(input.messages);
+    this.mailboxes.set(queueKey, mailbox);
     const run: PendingMessageRun = {
       input,
       stream,
@@ -51,7 +57,6 @@ export class AgentRunCoordinator {
       if (options.signal.aborted) this.cancelRun(run);
     }
 
-    const queueKey = conversationQueueKey(input.agentId, input.conversation.id);
     const queue = this.messageQueues.get(queueKey) ?? [];
     queue.push(run);
     this.messageQueues.set(queueKey, queue);
@@ -106,32 +111,46 @@ export class AgentRunCoordinator {
 
       run.status = "running";
       this.activeRuns.add(run);
+      const mailbox = this.mailboxes.get(queueKey);
+      const messages = mailbox?.takePending() ?? [];
+      if (messages.length === 0) {
+        run.stream.push(timestamped({ type: "delivery_skipped", reason: "already_processed" }));
+        this.finishRun(run, { type: "run_completed", replyCount: 0 });
+        continue;
+      }
       run.stream.push(timestamped({ type: "run_started" }));
       try {
-        const replyCount = await this.runner.run(run.input, {
-          signal: run.controller.signal,
-          onThinkingDelta: (delta) => {
-            if (run.status === "running" && !run.controller.signal.aborted) {
-              run.stream.push(timestamped({ type: "thinking_delta", delta }));
-            }
+        const replyCount = await this.runner.run(
+          { ...run.input, messages },
+          {
+            signal: run.controller.signal,
+            getExpectedSequence: () => mailbox?.observedSequence ?? 0,
+            onConflict: (result) => mailbox?.observeConflict(result),
+            onPublished: (result) => mailbox?.observePublished(result),
+            onThinkingDelta: (delta) => {
+              if (run.status === "running" && !run.controller.signal.aborted) {
+                run.stream.push(timestamped({ type: "thinking_delta", delta }));
+              }
+            },
+            onToolStarted: (toolName) => {
+              run.stream.push(timestamped({ type: "tool_started", toolName }));
+            },
+            onToolCompleted: (toolName) => {
+              run.stream.push(timestamped({ type: "tool_completed", toolName }));
+            },
+            onReply: (text, result) => {
+              run.stream.push(
+                timestamped({
+                  type: "reply_published",
+                  text,
+                  messageId: result.messageId,
+                  sequence: result.sequence,
+                  createdAt: result.createdAt,
+                }),
+              );
+            },
           },
-          onToolStarted: (toolName) => {
-            run.stream.push(timestamped({ type: "tool_started", toolName }));
-          },
-          onToolCompleted: (toolName) => {
-            run.stream.push(timestamped({ type: "tool_completed", toolName }));
-          },
-          onReply: (text, result) => {
-            run.stream.push(
-              timestamped({
-                type: "reply_published",
-                text,
-                messageId: result.messageId,
-                createdAt: result.createdAt,
-              }),
-            );
-          },
-        });
+        );
         if (run.controller.signal.aborted) {
           this.finishRun(run, { type: "run_cancelled" });
         } else {

@@ -40,6 +40,7 @@ export const updateAgentInputSchema = z
 
 export const runtimeMessageSchema = z.strictObject({
   id: nonEmptyString,
+  sequence: z.number().int().positive(),
   sender: z.strictObject({
     id: nonEmptyString,
     type: z.enum(["human", "agent"]),
@@ -124,6 +125,7 @@ export const replyPublishedEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("reply_published"),
   text: nonEmptyString,
   messageId: nonEmptyString,
+  sequence: z.number().int().positive(),
   createdAt: isoDateTime,
 });
 
@@ -138,7 +140,7 @@ export const runCancelledEventSchema = agentRuntimeEventBaseSchema.extend({
 
 export const deliverySkippedEventSchema = agentRuntimeEventBaseSchema.extend({
   type: z.literal("delivery_skipped"),
-  reason: z.literal("not_mentioned"),
+  reason: z.enum(["already_processed"]),
 });
 
 export const runFailedEventSchema = agentRuntimeEventBaseSchema.extend({
@@ -176,21 +178,34 @@ export interface DeliverMessageOptions {
   signal?: AbortSignal;
 }
 
-export interface PublishAgentReplyInput {
+export interface AttemptAgentReplyInput {
   deliveryId: string;
   runtimeAgentId: string;
   conversationId: string;
+  expectedSequence: number;
   text: string;
+  ignoreNew: boolean;
   replyIndex: number;
 }
 
 export interface PublishedAgentReply {
+  status: "published";
   messageId: string;
+  sequence: number;
   createdAt: string;
+  messages: RuntimeMessage[];
 }
 
+export interface ConflictedAgentReply {
+  status: "conflict";
+  latestSequence: number;
+  messages: RuntimeMessage[];
+}
+
+export type AgentReplyAttempt = PublishedAgentReply | ConflictedAgentReply;
+
 export interface AgentHost {
-  publishReply(input: PublishAgentReplyInput): Promise<PublishedAgentReply>;
+  attemptReply(input: AttemptAgentReplyInput): Promise<AgentReplyAttempt>;
 }
 
 export interface AgentRuntime {

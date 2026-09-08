@@ -15,8 +15,8 @@ import type {
   AgentHost,
   AgentRuntime,
   AgentRuntimeEvent,
+  AttemptAgentReplyInput,
   DeliverAgentMessageInput,
-  PublishAgentReplyInput,
 } from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -57,11 +57,14 @@ describe("Peerly 消息投递", () => {
         );
       },
     ]);
-    const publishReply = vi.fn(async (input: PublishAgentReplyInput) => ({
+    const attemptReply = vi.fn(async (input: AttemptAgentReplyInput) => ({
+      status: "published" as const,
       messageId: `published-${input.replyIndex}`,
+      sequence: input.expectedSequence + 1,
       createdAt: "2026-09-08T10:31:00.000Z",
+      messages: [],
     }));
-    const runtime = await makeRuntime(dataDirectory, models, { publishReply });
+    const runtime = await makeRuntime(dataDirectory, models, { attemptReply });
     await createAgent(runtime, "你擅长提炼产品需求。");
 
     const events = await collect(runtime.deliverMessage(directDelivery("请总结方案")));
@@ -79,13 +82,15 @@ describe("Peerly 消息投递", () => {
     expect(modelInput.userContent).not.toContain("message-101");
     expect(modelInput.userContent).not.toContain("conversation-1");
     expect(modelInput.systemPrompt).toContain("Peerly");
-    expect(modelInput.systemPrompt).toContain("私聊消息必须调用 reply 工具回复");
+    expect(modelInput.systemPrompt).toContain("私聊消息必须尝试调用 reply 工具回复");
     expect(modelInput.systemPrompt).toContain("你擅长提炼产品需求。");
-    expect(publishReply).toHaveBeenCalledWith({
+    expect(attemptReply).toHaveBeenCalledWith({
       deliveryId: "delivery-1",
       runtimeAgentId: "assistant",
       conversationId: "conversation-1",
+      expectedSequence: 1,
       text: "这是整理后的结论。",
+      ignoreNew: false,
       replyIndex: 0,
     });
     expect(events).toEqual(
@@ -160,39 +165,41 @@ describe("Peerly 消息投递", () => {
     const events = await collect(runtime.deliverMessage(directDelivery("必须回复")));
 
     expect(faux.state.callCount).toBe(2);
-    expect(host.publishReply).not.toHaveBeenCalled();
+    expect(host.attemptReply).not.toHaveBeenCalled();
     expect(events.at(-1)).toMatchObject({
       type: "run_failed",
       error: { code: "REPLY_REQUIRED" },
     });
   });
 
-  it("群聊普通消息不调用模型，被明确 mention 时必须回复", async () => {
+  it("群聊消息都调用模型，只有人类明确 mention 时强制回复", async () => {
     const dataDirectory = await makeDataDirectory();
     const { faux, models } = makeFauxModels();
-    faux.setResponses([replyResponse("群聊回复")]);
+    faux.setResponses([
+      fauxAssistantMessage("普通消息不需要回复"),
+      fauxAssistantMessage("提及的是其他 Agent"),
+      replyResponse("群聊回复"),
+    ]);
     const host = successfulHost();
     const runtime = await makeRuntime(dataDirectory, models, host);
     await createAgent(runtime);
 
-    const skipped = await collect(runtime.deliverMessage(groupDelivery(false)));
-    expect(skipped).toEqual([
-      expect.objectContaining({ type: "delivery_skipped", reason: "not_mentioned" }),
-    ]);
-    expect(faux.state.callCount).toBe(0);
+    const ordinary = await collect(runtime.deliverMessage(groupDelivery(false, undefined, 1)));
+    expect(ordinary.at(-1)).toMatchObject({ type: "run_completed", replyCount: 0 });
+    expect(faux.state.callCount).toBe(1);
 
     const mentionedOtherAgent = await collect(
-      runtime.deliverMessage(groupDelivery(true, "agent-other")),
+      runtime.deliverMessage(groupDelivery(true, "agent-other", 2)),
     );
     expect(mentionedOtherAgent.at(-1)).toMatchObject({
-      type: "delivery_skipped",
-      reason: "not_mentioned",
+      type: "run_completed",
+      replyCount: 0,
     });
-    expect(faux.state.callCount).toBe(0);
+    expect(faux.state.callCount).toBe(2);
 
-    const events = await collect(runtime.deliverMessage(groupDelivery(true)));
-    expect(faux.state.callCount).toBe(1);
-    expect(host.publishReply).toHaveBeenCalledOnce();
+    const events = await collect(runtime.deliverMessage(groupDelivery(true, undefined, 3)));
+    expect(faux.state.callCount).toBe(3);
+    expect(host.attemptReply).toHaveBeenCalledOnce();
     expect(events.at(-1)).toMatchObject({ type: "run_completed", replyCount: 1 });
   });
 });
@@ -216,6 +223,7 @@ function directDelivery(
     messages: [
       {
         id: overrides.messageId ?? "message-101",
+        sequence: Number(overrides.messageId?.match(/\d+$/)?.[0] ?? 1),
         sender: { id: "human-alice", type: "human", name: "Alice" },
         createdAt: "2026-09-08T10:30:00.000Z",
         content: { type: "text", text },
@@ -227,6 +235,7 @@ function directDelivery(
 function groupDelivery(
   mentioned: boolean,
   mentionedPrincipalId = "agent-assistant",
+  sequence = 1,
 ): DeliverAgentMessageInput {
   return {
     deliveryId: mentioned ? "delivery-group-mentioned" : "delivery-group-ordinary",
@@ -236,6 +245,7 @@ function groupDelivery(
     messages: [
       {
         id: mentioned ? "message-mentioned" : "message-ordinary",
+        sequence,
         sender: { id: "human-alice", type: "human", name: "Alice" },
         createdAt: "2026-09-08T10:30:00.000Z",
         content: {
@@ -260,11 +270,14 @@ function transcriptLine(message: { role: string; content: Parameters<typeof cont
   return `${message.role}:${contentText(message.content)}`;
 }
 
-function successfulHost(): AgentHost & { publishReply: ReturnType<typeof vi.fn> } {
+function successfulHost(): AgentHost & { attemptReply: ReturnType<typeof vi.fn> } {
   return {
-    publishReply: vi.fn(async (input: PublishAgentReplyInput) => ({
+    attemptReply: vi.fn(async (input: AttemptAgentReplyInput) => ({
+      status: "published" as const,
       messageId: `${input.deliveryId}-${input.replyIndex}`,
+      sequence: input.expectedSequence + 1,
       createdAt: "2026-09-08T10:31:00.000Z",
+      messages: [],
     })),
   };
 }

@@ -31,6 +31,7 @@ export async function runRuntimeCli({ runtime, terminal }: RunRuntimeCliOptions)
     const agent = await selectAgent(runtime, terminal);
     if (!agent || exitRequested) return;
     let conversationId = newConversationId();
+    let sequence = 0;
     terminal.write("Commands: /new starts a new conversation, /exit quits.\n");
 
     while (!exitRequested) {
@@ -38,6 +39,7 @@ export async function runRuntimeCli({ runtime, terminal }: RunRuntimeCliOptions)
       if (content === undefined || exitRequested || content.trim() === "/exit") break;
       if (content.trim() === "/new") {
         conversationId = newConversationId();
+        sequence = 0;
         terminal.write("Started a new conversation.\n");
         continue;
       }
@@ -56,6 +58,7 @@ export async function runRuntimeCli({ runtime, terminal }: RunRuntimeCliOptions)
             messages: [
               {
                 id: `cli-message-${randomUUID()}`,
+                sequence: ++sequence,
                 sender: { id: "runtime-cli-user", type: "human", name: "You" },
                 createdAt: new Date().toISOString(),
                 content: { type: "text", text: content },
@@ -71,6 +74,7 @@ export async function runRuntimeCli({ runtime, terminal }: RunRuntimeCliOptions)
             }
             terminal.write(event.delta);
           } else if (event.type === "reply_published") {
+            sequence = Math.max(sequence, event.sequence);
             if (thinkingStarted) terminal.write("\n");
             terminal.write(`${agent.name}> ${event.text}\n`);
           } else if (event.type === "run_cancelled") {

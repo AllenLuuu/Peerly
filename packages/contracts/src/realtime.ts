@@ -32,6 +32,7 @@ const agentActivitySchema = z.discriminatedUnion("type", [
     timestamp,
     text: z.string().min(1),
     messageId: z.string().min(1),
+    sequence: z.number().int().positive(),
     createdAt: timestamp,
   }),
   z.strictObject({
@@ -43,7 +44,7 @@ const agentActivitySchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("delivery_skipped"),
     timestamp,
-    reason: z.literal("not_mentioned"),
+    reason: z.literal("already_processed"),
   }),
   z.strictObject({
     type: z.literal("run_failed"),

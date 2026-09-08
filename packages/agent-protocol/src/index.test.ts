@@ -83,11 +83,12 @@ describe("shared response schemas", () => {
           timestamp,
           text: "Hello",
           messageId: "message-1",
+          sequence: 1,
           createdAt: timestamp,
         },
         { type: "run_completed", timestamp, replyCount: 1 },
         { type: "run_cancelled", timestamp },
-        { type: "delivery_skipped", timestamp, reason: "not_mentioned" },
+        { type: "delivery_skipped", timestamp, reason: "already_processed" },
         {
           type: "run_failed",
           timestamp,
@@ -110,6 +111,7 @@ describe("shared response schemas", () => {
         messages: [
           {
             id: "message-1",
+            sequence: 1,
             sender: { id: "human-alice", type: "human", name: "Alice" },
             createdAt: "2026-09-08T10:00:00.000Z",
             content: {

@@ -14,9 +14,10 @@ import type {
   UpdateGroupParticipantsInput,
 } from "@peerly/contracts";
 import type {
+  AgentReplyAttempt,
+  AttemptAgentReplyInput,
   DeliverAgentMessageInput,
-  PublishAgentReplyInput,
-  PublishedAgentReply,
+  RuntimeMessage,
   RuntimeAgentDefinition,
 } from "@peerly/agent-protocol";
 
@@ -380,6 +381,7 @@ export class PeerlyService {
               }
               return {
                 id: contextMessage.id,
+                sequence: contextMessage.sequence,
                 sender: {
                   id: contextSender.id,
                   type: contextSender.type,
@@ -395,29 +397,82 @@ export class PeerlyService {
     });
   }
 
-  async publishAgentReply(input: PublishAgentReplyInput): Promise<{
-    result: Delivered<Message>;
-    published: PublishedAgentReply;
+  async attemptAgentReply(input: AttemptAgentReplyInput): Promise<{
+    attempt: AgentReplyAttempt;
+    result?: Delivered<Message>;
   }> {
-    const principal = this.#repository
-      .readState()
-      .principals.find(
+    return this.#mutate(async () => {
+      const state = this.#repository.readState();
+      const principal = state.principals.find(
         (candidate): candidate is AgentPrincipal =>
           candidate.type === "agent" &&
           candidate.runtimeAgentId === input.runtimeAgentId &&
           candidate.status === "active",
       );
-    if (!principal) {
-      throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active Agent principal not found", 404);
-    }
-    const result = await this.sendMessage(principal.id, input.conversationId, {
-      clientMessageId: replyClientMessageId(input),
-      content: { type: "text", text: input.text },
+      if (!principal) {
+        throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active Agent principal not found", 404);
+      }
+      const conversation = this.#requireConversation(state, input.conversationId);
+      this.#requireParticipant(conversation, principal.id);
+
+      const messages = await this.#repository.readMessages(conversation.id);
+      const clientMessageId = replyClientMessageId(input);
+      const existing = messages.find(
+        (message) =>
+          message.senderId === principal.id && message.clientMessageId === clientMessageId,
+      );
+      if (existing) {
+        return {
+          attempt: {
+            status: "published",
+            messageId: existing.id,
+            sequence: existing.sequence,
+            createdAt: existing.createdAt,
+            messages: [],
+          },
+        };
+      }
+
+      const newerMessages = messages.filter((message) => message.sequence > input.expectedSequence);
+      const latestSequence = messages.at(-1)?.sequence ?? 0;
+      if (latestSequence !== input.expectedSequence && !input.ignoreNew) {
+        return {
+          attempt: {
+            status: "conflict",
+            latestSequence,
+            messages: newerMessages.map((message) => this.#toRuntimeMessage(state, message)),
+          },
+        };
+      }
+
+      const timestamp = this.#now();
+      const message: Message = {
+        id: this.#generateId("message"),
+        conversationId: conversation.id,
+        senderId: principal.id,
+        clientMessageId,
+        sequence: latestSequence + 1,
+        content: { type: "text", text: input.text },
+        createdAt: timestamp,
+      };
+      await this.#repository.appendMessage(message);
+      conversation.updatedAt = timestamp;
+      await this.#repository.saveState(state);
+      return {
+        attempt: {
+          status: "published",
+          messageId: message.id,
+          sequence: message.sequence,
+          createdAt: message.createdAt,
+          messages: newerMessages.map((candidate) => this.#toRuntimeMessage(state, candidate)),
+        },
+        result: {
+          value: message,
+          created: true,
+          recipientIds: [...conversation.participantIds],
+        },
+      };
     });
-    return {
-      result,
-      published: { messageId: result.value.id, createdAt: result.value.createdAt },
-    };
   }
 
   requireConversationAccess(actorId: string | undefined, conversationId: string): void {
@@ -480,6 +535,18 @@ export class PeerlyService {
     }
   }
 
+  #toRuntimeMessage(state: PeerlyState, message: Message): RuntimeMessage {
+    const sender = state.principals.find((principal) => principal.id === message.senderId);
+    if (!sender) throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Message sender not found", 404);
+    return {
+      id: message.id,
+      sequence: message.sequence,
+      sender: { id: sender.id, type: sender.type, name: sender.displayName },
+      createdAt: message.createdAt,
+      content: message.content,
+    };
+  }
+
   #mutate<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.#mutationTail.then(operation, operation);
     this.#mutationTail = result.then(
@@ -490,7 +557,7 @@ export class PeerlyService {
   }
 }
 
-function replyClientMessageId(input: PublishAgentReplyInput): string {
+function replyClientMessageId(input: AttemptAgentReplyInput): string {
   const digest = createHash("sha256")
     .update(`${input.deliveryId}\u0000${input.replyIndex}`)
     .digest("hex");

@@ -2,7 +2,7 @@ import type {
   AgentHost,
   AgentRuntime,
   AgentRuntimeEvent,
-  PublishAgentReplyInput,
+  AttemptAgentReplyInput,
 } from "@peerly/agent-protocol";
 import type { Message } from "@peerly/contracts";
 
@@ -106,14 +106,19 @@ export class AgentMessageDispatcher {
   }
 }
 
-export function createPeerlyAgentHost(peerly: PeerlyService, realtime: PeerlyRealtime): AgentHost {
+export function createPeerlyAgentHost(
+  peerly: PeerlyService,
+  realtime: PeerlyRealtime,
+  onMessageCreated: (message: Message) => void = () => undefined,
+): AgentHost {
   return {
-    async publishReply(input: PublishAgentReplyInput) {
-      const { result, published } = await peerly.publishAgentReply(input);
-      if (result.created) {
+    async attemptReply(input: AttemptAgentReplyInput) {
+      const { result, attempt } = await peerly.attemptAgentReply(input);
+      if (result?.created) {
         realtime.publish({ type: "message.created", message: result.value }, result.recipientIds);
+        onMessageCreated(result.value);
       }
-      return published;
+      return attempt;
     },
   };
 }

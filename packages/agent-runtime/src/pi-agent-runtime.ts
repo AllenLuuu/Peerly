@@ -82,7 +82,6 @@ export class PiAgentRuntime implements AgentRuntime {
   ): AgentRuntimeEventStream {
     this.assertOpen();
     const parsed = parseInput(deliverAgentMessageInputSchema, input);
-    if (!requiresAgentRun(parsed)) return skippedDelivery();
     return this.runs.deliverMessage(parsed, options);
   }
 
@@ -102,23 +101,6 @@ export class PiAgentRuntime implements AgentRuntime {
       throw new AgentRuntimeOperationError("RUNTIME_CLOSED", "Agent Runtime is closed");
     }
   }
-}
-
-function requiresAgentRun(input: DeliverAgentMessageInput): boolean {
-  if (input.conversation.type === "direct") return true;
-  return (
-    input.messages
-      .at(-1)
-      ?.content.mentions?.some((mention) => mention.principalId === input.agentPrincipalId) === true
-  );
-}
-
-async function* skippedDelivery(): AgentRuntimeEventStream {
-  yield {
-    type: "delivery_skipped",
-    reason: "not_mentioned",
-    timestamp: new Date().toISOString(),
-  };
 }
 
 function parseInput<T>(schema: ZodType<T>, input: unknown): T {

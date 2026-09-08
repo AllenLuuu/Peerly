@@ -35,7 +35,9 @@ Web 开发服务器会把 `/api` 和 `/socket.io` 代理到后端，所以浏览
 
 群聊创建者和组织管理员可以点击聊天标题栏中的“管理群成员”添加或移除成员。创建者不能被移出自己创建的群聊，被移除的成员会立即失去读取和发送权限。
 
-群聊输入区会列出当前群内处于 active 状态的 Agent。选中一个或多个 Agent 后发送消息，Web 会同时生成可读的 `@名称` 文本和包含 Principal ID 的结构化 mention。普通群消息仍会同步给 Runtime，但 Runtime 不会调用模型；只有明确 mention 当前 Agent 的消息才会触发该 Agent。Agent 的正式回复不会自动触发另一个 Agent。
+群聊输入区会列出当前群内处于 active 状态的 Agent。选中一个或多个 Agent 后发送消息，Web 会同时生成可读的 `@名称` 文本和包含 Principal ID 的结构化 mention。普通群消息和 Agent 的正式回复都会同步给其他 Agent，由各 Agent 自主判断是否需要参与；人类明确 mention 当前 Agent 时，该 Agent 必须尝试回复。Agent 之间的 mention 不强制回复。
+
+如果 Agent 生成回复期间会话出现新消息，草稿不会直接展示在聊天中。Runtime 会先让 Agent 阅读新增消息并决定重试、修改、强制发送或取消。Web 始终只展示通过 Server 一致性检查并成功落盘的最终回复。
 
 ## 模拟两人实时聊天
 

@@ -2,6 +2,7 @@ import { AgentHarness, BACKGROUND_CONTEXT, type AgentLane } from "@earendil-work
 import type { Models } from "@earendil-works/pi-ai";
 import type {
   AgentHost,
+  ConflictedAgentReply,
   DeliverAgentMessageInput,
   PublishedAgentReply,
   RuntimeAgentDefinition,
@@ -18,6 +19,9 @@ const MAIN_LANE = "main";
 
 export interface RunPiMessageOptions {
   signal: AbortSignal;
+  getExpectedSequence: () => number;
+  onConflict: (result: ConflictedAgentReply) => void;
+  onPublished: (result: PublishedAgentReply) => void;
   onThinkingDelta: (delta: string) => void;
   onToolStarted: (toolName: string) => void;
   onToolCompleted: (toolName: string) => void;
@@ -50,13 +54,26 @@ export class PiMessageRunner {
     let harness:
       Awaited<ReturnType<typeof AgentHarness.create<ReplyToolContext>>>["harness"] | undefined;
     let replyCount = 0;
+    let replyAttempted = false;
+    let conflictOccurred = false;
     const toolContext: ReplyToolContext = {
       deliveryId: input.deliveryId,
       runtimeAgentId: input.agentId,
       conversationId: input.conversation.id,
+      conversationType: input.conversation.type,
       host: this.host,
       signal: options.signal,
+      expectedSequence: options.getExpectedSequence,
+      hasConflict: () => conflictOccurred,
       nextReplyIndex: () => replyCount,
+      onReplyAttempt: () => {
+        replyAttempted = true;
+      },
+      onConflict: (result) => {
+        conflictOccurred = true;
+        options.onConflict(result);
+      },
+      onPublished: options.onPublished,
       onReply: (text, result) => {
         replyCount += 1;
         options.onReply(text, result);
@@ -95,14 +112,14 @@ export class PiMessageRunner {
       try {
         const modelInput = formatPeerlyMessageBatch(input);
         await promptLane(lane, modelInput, options.signal);
-        if (replyCount === 0) {
+        if (requiresReply(input) && !replyAttempted) {
           await promptLane(lane, modelInput, options.signal);
         }
       } finally {
         unsubscribeUpdates();
       }
 
-      if (replyCount === 0) {
+      if (requiresReply(input) && !replyAttempted) {
         throw new AgentRuntimeOperationError(
           "REPLY_REQUIRED",
           "The Agent did not call reply for a message that requires a reply",
@@ -137,6 +154,17 @@ export class PiMessageRunner {
     }
     return agent;
   }
+}
+
+function requiresReply(input: DeliverAgentMessageInput): boolean {
+  if (input.conversation.type === "direct") return true;
+  return input.messages.some(
+    (message) =>
+      message.sender.type === "human" &&
+      message.content.mentions?.some(
+        (mention) => mention.principalId === input.agentPrincipalId,
+      ) === true,
+  );
 }
 
 export class MessageRunCancelledError extends Error {}

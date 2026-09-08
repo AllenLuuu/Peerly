@@ -17,6 +17,7 @@
     "runtime:cli": "pnpm --filter @peerly/runtime-cli... build && pnpm --filter @peerly/runtime-cli start",
     "server:start": "pnpm --filter @peerly/server... build && pnpm --filter @peerly/server start",
     "smoke:agent": "pnpm --filter @peerly/server... build && node --env-file-if-exists=.env.local scripts/agent-chat-smoke.mjs",
+    "smoke:counting": "pnpm --filter @peerly/server... build && node --env-file-if-exists=.env.local scripts/agent-counting-smoke.mjs",
     "test": "vitest run",
     "typecheck": "pnpm -r --if-present typecheck"
   },

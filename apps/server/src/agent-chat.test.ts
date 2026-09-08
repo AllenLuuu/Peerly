@@ -6,10 +6,10 @@ import type {
   AgentHost,
   AgentRuntime,
   AgentRuntimeEventStream,
+  AttemptAgentReplyInput,
   CreateAgentInput,
   DeliverAgentMessageInput,
   DeliverMessageOptions,
-  PublishAgentReplyInput,
   RuntimeAgentDefinition,
 } from "@peerly/agent-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -179,7 +179,7 @@ describe("平台内私聊 Agent", () => {
     await waitFor(() => runtime.wasCancelled);
   });
 
-  it("群聊同步给所有 Agent，只有被 mention 的 Agent 回复并收到最近消息", async () => {
+  it("群聊同步给所有 Agent，普通消息可保持沉默，人类 mention 要求回复并附最近消息", async () => {
     const runtime = new FakeAgentRuntime();
     const app = await makeApp(runtime);
     const { alice, cookie } = await bootstrapAdministrator(app);
@@ -218,10 +218,13 @@ describe("平台内私聊 Agent", () => {
         },
       },
     });
-    await waitFor(() => runtime.deliverMessage.mock.calls.length === 4);
+    await waitFor(() => runtime.deliverMessage.mock.calls.length >= 4);
     await waitFor(() => runtime.publishedReplies.length === 2);
+    await waitFor(() => runtime.deliverMessage.mock.calls.length >= 6);
 
-    const mentionedDeliveries = runtime.deliverMessage.mock.calls.slice(-2).map(([input]) => input);
+    const mentionedDeliveries = runtime.deliverMessage.mock.calls
+      .map(([input]) => input)
+      .filter((input) => input.messages.at(-1)?.content.mentions?.length);
     expect(mentionedDeliveries.map((input) => input.agentPrincipalId)).toEqual(
       expect.arrayContaining([emily.id, researcher.id]),
     );
@@ -345,7 +348,9 @@ class FakeAgentRuntime implements AgentRuntime {
             (mention) => mention.principalId === input.agentPrincipalId,
           )
         ) {
-          yield { type: "delivery_skipped", timestamp: now(), reason: "not_mentioned" };
+          yield { type: "run_queued", timestamp: now() };
+          yield { type: "run_started", timestamp: now() };
+          yield { type: "run_completed", timestamp: now(), replyCount: 0 };
           return;
         }
         yield { type: "run_queued", timestamp: now() };
@@ -364,23 +369,31 @@ class FakeAgentRuntime implements AgentRuntime {
           deliveryId: input.deliveryId,
           runtimeAgentId: input.agentId,
           conversationId: input.conversation.id,
+          expectedSequence: trigger?.sequence ?? 0,
           text: "这是正式回复",
+          ignoreNew: true,
           replyIndex: 0,
-        } satisfies PublishAgentReplyInput;
+        } satisfies AttemptAgentReplyInput;
         publishedReplies.push(replyInput);
-        const published = await host.publishReply(replyInput);
+        const published = await host.attemptReply(replyInput);
+        if (published.status === "conflict") {
+          yield { type: "run_completed", timestamp: now(), replyCount: 0 };
+          return;
+        }
         yield {
           type: "reply_published",
           timestamp: now(),
           text: "这是正式回复",
-          ...published,
+          messageId: published.messageId,
+          sequence: published.sequence,
+          createdAt: published.createdAt,
         };
         yield { type: "run_completed", timestamp: now(), replyCount: 1 };
       })();
     },
   );
   lastDelivery: DeliverAgentMessageInput | undefined;
-  publishedReplies: PublishAgentReplyInput[] = [];
+  publishedReplies: AttemptAgentReplyInput[] = [];
   wasCancelled = false;
   host!: AgentHost;
 

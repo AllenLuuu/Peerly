@@ -139,7 +139,9 @@ curl -b alice.cookies -X PATCH \
 }
 ```
 
-后端会验证目标属于当前 Conversation、处于 active 状态、名称与 Principal 一致，并且文本中确实包含对应的 `@名称`。群消息会同步给所有群内 Agent；Runtime 只为被 mention 的 Agent 调用模型。触发投递包含最近最多 20 条公开消息。
+后端会验证目标属于当前 Conversation、处于 active 状态、名称与 Principal 一致，并且文本中确实包含对应的 `@名称`。群消息会同步给所有群内 Agent，触发投递包含最近最多 20 条公开消息。Runtime 会让每个 Agent 自主判断是否回复；只有人类发出的结构化 mention 会产生必须尝试回复的义务，Agent 之间的 mention 不强制回复。
+
+Agent 调用 `reply` 时会携带它已看到的最新消息 `sequence`。后端在消息写锁内执行比较和追加：如果 Conversation 已产生新消息，则不发布回复，并返回所有新增消息；Runtime 将它们交给 Agent 决定原文重试、修改或取消。发生过冲突后，Agent 可以使用 `ignore_new` 强制将回复追加到最新消息之后。该选项不绕过 Agent 状态、成员关系或其他权限校验。成功发布的 Agent 消息也会被投递给群内其他 Agent，但不会投递回发送者自己。
 
 ## 实时通知
 

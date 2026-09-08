@@ -43,8 +43,13 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
   const realtime = attachPeerlyRealtime(app, (principalId) =>
     service.getSessionPrincipal(principalId),
   );
+  const dispatcherRef: { current?: AgentMessageDispatcher } = {};
   const agentRuntime = options.agentRuntimeFactory
-    ? await options.agentRuntimeFactory(createPeerlyAgentHost(service, realtime))
+    ? await options.agentRuntimeFactory(
+        createPeerlyAgentHost(service, realtime, (message) =>
+          dispatcherRef.current?.dispatch(message),
+        ),
+      )
     : undefined;
   const agentProvisioning = agentRuntime
     ? new AgentProvisioningService(service, agentRuntime)
@@ -52,6 +57,7 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
   const agentDispatcher = agentRuntime
     ? new AgentMessageDispatcher(service, realtime, agentRuntime)
     : undefined;
+  if (agentDispatcher) dispatcherRef.current = agentDispatcher;
 
   if (agentRuntime && agentDispatcher) {
     app.addHook("onClose", async () => {

@@ -103,6 +103,7 @@ async function* completedResponse(): AsyncIterable<AgentRuntimeEvent> {
     timestamp,
     text: "Hello!",
     messageId: "message-1",
+    sequence: 2,
     createdAt: timestamp,
   };
   yield { type: "run_completed", timestamp, replyCount: 1 };
@@ -124,23 +125,31 @@ describe("Runtime CLI", () => {
       "Peerly Assistant",
       "Help with Peerly.",
       "Hi",
+      "Follow up",
       "/new",
       "Hi again",
       "/exit",
     ]);
     await runRuntimeCli({ runtime, terminal });
 
-    expect(runtime.deliveredMessages).toHaveLength(2);
+    expect(runtime.deliveredMessages).toHaveLength(3);
     expect(runtime.deliveredMessages[0]).toMatchObject({
       agentId: "assistant",
       messages: [{ content: { text: "Hi" } }],
     });
     expect(runtime.deliveredMessages[1]).toMatchObject({
       agentId: "assistant",
-      messages: [{ content: { text: "Hi again" } }],
+      messages: [{ sequence: 3, content: { text: "Follow up" } }],
     });
-    expect(runtime.deliveredMessages[0]?.conversation.id).not.toBe(
+    expect(runtime.deliveredMessages[2]).toMatchObject({
+      agentId: "assistant",
+      messages: [{ sequence: 1, content: { text: "Hi again" } }],
+    });
+    expect(runtime.deliveredMessages[0]?.conversation.id).toBe(
       runtime.deliveredMessages[1]?.conversation.id,
+    );
+    expect(runtime.deliveredMessages[1]?.conversation.id).not.toBe(
+      runtime.deliveredMessages[2]?.conversation.id,
     );
     expect(terminal.output.join("")).toContain("Hello!");
   });

@@ -33,7 +33,7 @@ pnpm build
 pnpm dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent。成员既可以发起私聊，也可以创建包含人类和 Agent 的群聊；群聊中只有结构化 `@Agent` 才会触发 Agent 回复。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
+浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent。成员既可以发起私聊，也可以创建包含人类和 Agent 的群聊。群内 Agent 会接收所有公开消息并自主判断是否回复；人类的结构化 `@Agent` 要求 Agent 必须尝试回复。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
 
 ## Peerly 后端
 
@@ -63,7 +63,15 @@ pnpm runtime:cli
 pnpm smoke:agent
 ```
 
-该命令会通过真实 HTTP API 创建管理员、Agent、私聊和群聊，验证普通群消息不触发 Agent、结构化 mention 可以触发正式回复，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
+该命令会通过真实 HTTP API 创建管理员、Agent、私聊和群聊，验证 Agent 能在无需回复的普通群消息中保持沉默，并响应人类的结构化 mention，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
+
+使用 5 个真实 Agent 验证冲突协调和连续报数：
+
+```sh
+pnpm smoke:counting
+```
+
+该命令要求五个 Agent 同时从 1 开始报数，最终只接受按消息顺序出现的 `1、2、3、4、5`，并检查每个 Agent 只回复一次。该测试会产生多轮真实模型调用。
 
 Peerly 后端或 Runtime CLI 等调用方负责创建 Runtime，并为每条消息消费一个事件流：
 
@@ -72,9 +80,15 @@ import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
 
 const runtime = await createAgentRuntimeFromEnvironment({
   host: {
-    async publishReply() {
-      // 平台在这里校验权限、持久化正式消息并返回结果。
-      return { messageId: "message-1", createdAt: new Date().toISOString() };
+    async attemptReply(input) {
+      // 平台在这里原子检查 expectedSequence、持久化正式消息并返回结果。
+      return {
+        status: "published",
+        messageId: "message-2",
+        sequence: input.expectedSequence + 1,
+        createdAt: new Date().toISOString(),
+        messages: [],
+      };
     },
   },
 });
@@ -94,6 +108,7 @@ for await (const event of runtime.deliverMessage(
     messages: [
       {
         id: "message-1",
+        sequence: 1,
         sender: { id: "human-1", type: "human", name: "Alice" },
         createdAt: new Date().toISOString(),
         content: { type: "text", text: "我们应该先研究什么？" },
@@ -107,4 +122,4 @@ for await (const event of runtime.deliverMessage(
 await runtime.close();
 ```
 
-Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session。同一映射中的消息按 FIFO 顺序执行，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。私聊和群聊 mention 会调用模型；没有 mention 当前 Agent 的普通群消息返回 `delivery_skipped`。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Provider 凭证不会写入 Agent Definition。
+Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session 和独立消息池。同一映射中的消息串行处理，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。群聊公开消息都会由 Agent 判断是否需要回复；私聊和人类明确 mention 当前 Agent 时必须尝试回复。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Host 使用 `expectedSequence` 原子检查会话是否变化，发生冲突时把新增消息返回 Agent 重新判断。Provider 凭证不会写入 Agent Definition。
