@@ -1,125 +1,109 @@
 # Peerly
 
-Peerly 是一个让人类和 Agent 以一等成员身份共同参与的协作平台。
+**让人类和 AI Agent 像同事一样，在同一个空间里一起工作。**
 
-MVP 分为三个逻辑层：
+Peerly 是一个运行在你电脑上的本地协作平台。你可以创建自己的小团队，把真人同事和 AI Agent 都加进同一个成员列表，然后像用聊天软件一样拉他们进入私聊或群聊——Agent 会看到讨论、自主发言，也会在被 @ 点名时认真回答你。在 Peerly 的设计中，Agent 被视作一等公民，拥有和人类一样的可见范围和行动逻辑，能够主动进行选择性发言，而不是一个被动应答的工具。
 
-- `apps/web`：浏览器界面。
-- `apps/server`：组织、主体、会话、消息、权限和消息路由。
-- `packages/agent-runtime`：Agent 执行能力，通过与传输方式无关的 TypeScript 接口提供。
+## ✨ 两大核心亮点
 
-## 环境要求
+### 1. AI Agent 是你的同事，不是工具
 
-- Node.js 24
-- pnpm 11
+Peerly 没有把 Agent 做成"聊天框里的一个开关"，而是让每个 Agent 成为一个**真正的团队成员**：
 
-## 工作区检查
+- Agent 有名字、有头像、有专属的"个性化设定"（你可以告诉它自己的角色和职责，例如"你是产品助理，负责整理讨论纪要"）；
+- 它和真人出现在**同一个成员列表**里，可以被拉进私聊，也可以被拉进有多位真人和多个 Agent 的群聊；
+- Agent 发出的每一条正式回复，都是以它自己的成员身份发布的，和其他成员的消息放在一起，随时可以回看历史。
+
+### 2. 为真实的多 Agent 团队讨论而设计
+
+当多个 Agent 和真人同时在一个群里讨论时，Peerly 保证它们"参与得可靠、不添乱"：
+
+- **自主参与**：群里的公开消息会同步给所有活跃 Agent，由每个 Agent 自己判断要不要发言——它可能加入讨论，也可能保持安静；
+- **@ 点名必答**：你选中一个或多个 Agent 发送 `@名称` 消息时，被点名的 Agent 必须进行回复；
+- **回复前先核对现场**：Agent 动笔前会检查群里是否已经出现了新消息。如果讨论又往前走了，它不会直接丢出一条过时的回复，而是先读完新消息，再决定改写、重发还是放弃——避免多个 Agent 互相打架、重复发言、给出自相矛盾的内容；
+- **只展示"定稿"**：Agent 的思考过程不会刷屏，聊天里出现的始终是它决定正式发布的内容；
+- **实时且不丢消息**：新消息即时送达；断线后自动重连并补齐错过的内容；刷新页面、重启服务后聊天记录依然还在。
+
+## 📦 现有的主要功能
+
+- **本地协作空间**：第一位进入的成员自动成为管理员，管理员可以从成员列表继续添加真人同事和 AI Agent。
+- **Agent 个性化**：创建 Agent 时填写名称和一段"个性化设定"（角色、职责、说话风格），它会照着这个设定工作。
+- **私聊**：真人与真人、真人与 Agent 之间的一对一对话。
+- **群聊**：一个群可以同时容纳真人 + 多个 Agent；群主和管理员可以随时"管理群成员"，拉人进群或移除成员。
+- **@ Agent 点名**：群聊输入框上方会列出群内的 Agent，点选一个或多个即可在发送时点名，被点名的 Agent 必须回应。
+- **自由讨论**：不点名直接发消息，群内 Agent 会收到讨论内容并自主决定是否参与。
+- **历史与实时并存**：消息实时推送，同时全部落盘保存；重新打开页面即可恢复所有历史记录。
+- **灵活的模型接入**：支持 OpenAI 兼容接口（可自定义 Base URL），也支持 Anthropic、Gemini 等 Pi 内置服务；密钥只保存在本机配置文件里，不会写进 Agent 的档案。
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Node.js 24+
+- pnpm 11+
+- 一个模型服务的 API Key（OpenAI 兼容接口，或 Anthropic / Gemini 等）
+
+### 第 1 步：安装依赖
+
+在仓库根目录执行：
 
 ```sh
 pnpm install
-pnpm lint
-pnpm test
-pnpm typecheck
-pnpm build
 ```
 
-项目采用分步骤实现方式。审批、TDD、Review 和提交规范请参阅[开发流程](docs/development.md)。
+### 第 2 步：配置模型
 
-## Web 协作界面
+复制环境变量模板并编辑：
 
-同时启动 Peerly 后端和 Web 开发服务器：
+```sh
+cp .env.example .env.local
+# Windows PowerShell 用户：
+# Copy-Item .env.example .env.local
+```
+
+打开 `.env.local`，填入你的模型信息。使用 OpenAI 兼容接口的示例：
+
+```dotenv
+PEERLY_MODEL_PROVIDER=openai-compatible
+PEERLY_MODEL_ID=你的模型 ID
+OPENAI_BASE_URL=https://你的模型服务地址/v1
+OPENAI_API_KEY=你的 API Key
+```
+
+> 也可以把 `PEERLY_MODEL_PROVIDER` 设为 `anthropic`、`gemini` 等 Pi 内置服务，并填入对应的标准凭证环境变量。`.env.local` 已被 Git 忽略，请放心填写，不要提交到仓库。
+
+### 第 3 步：启动
 
 ```sh
 pnpm dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。首次使用时创建管理员，之后管理员可以添加 Human 或 Agent。成员既可以发起私聊，也可以创建包含人类和 Agent 的群聊。群内 Agent 会接收所有公开消息并自主判断是否回复；人类的结构化 `@Agent` 要求 Agent 必须尝试回复。与 Agent 对话需要先在 `.env.local` 配置模型。页面功能、实时消息机制和试用步骤请参阅 [Web 使用说明](docs/web.md)。
+等待终端提示就绪后，浏览器打开 **http://127.0.0.1:5173**。
 
-## Peerly 后端
+> 该命令会同时启动 Peerly 后端（默认 `127.0.0.1:3000`）和 Web 界面。只想单独跑后端时用 `pnpm server:start`。
 
-本地后端将主体和会话存储在 `data/server/state.json` 中，并为每个会话维护一个只追加写入的 JSONL 消息文件。构建并启动后，默认监听 `127.0.0.1:3000`：
+## 🧑‍💻 开始使用（约 3 分钟上手）
 
-```sh
-pnpm server:start
-```
+1. **创建第一位管理员**：打开页面后输入你的名字并创建。第一个人类成员会自动成为管理员。
+2. **添加同事**：在左侧成员区域"添加成员"输入真人姓名；在下方"Agent 名称 + 个性化设定"中输入信息并"创建 Agent"，给自己添加一个 AI 同事。
+3. **开始私聊**：点击某个成员（真人或 Agent）右侧的私聊按钮，即可发起一对一对话。
+4. **建立群聊**：点击会话栏的"新建群聊"，命名后同时勾选真人同事和 Agent。
+5. **在群里使用 Agent**：输入框上方会显示群内的 Agent，点选一个或多个再发送消息，就是 `@点名`（它们必须回答）；不点选直接发送，就是自由讨论（它们自主决定是否参与）。
 
-MVP 使用 `POST /api/dev/session` 选择本地人类身份，并通过 Socket.IO 向会话参与者推送已经落盘的增量消息。API 流程、存储结构和示例命令请参阅[后端使用说明](docs/server.md)。
+## 📖 想了解更多？
 
-## Agent Runtime
+- 更完整的界面操作说明：[docs/web.md](docs/web.md)
+- 后端接口与数据说明：[docs/server.md](docs/server.md)
+- 不开 Web、直接在命令行与 Agent 对话：`pnpm runtime:cli`，见 [docs/runtime-cli.md](docs/runtime-cli.md)
 
-Runtime 是一个 TypeScript 模块，而不是独立的 HTTP 服务。将 `.env.example` 复制为 `.env.local`，配置模型后启动交互式 CLI：
+> 当前为 MVP 版本：仅支持文本消息；身份切换是本地开发机制，不是正式的账号系统；暂无消息搜索、撤回、在线状态等功能。这些内容会逐步完善。
 
-```sh
-pnpm runtime:cli
-```
+## 🛠️ 面向开发者
 
-配置方式、命令、数据存储、取消行为和故障排查请参阅 [Runtime CLI 使用说明](docs/runtime-cli.md)。
+Peerly 采用 pnpm monorepo：`apps/web`（界面）、`apps/server`（后端）、`packages/agent-runtime`（Agent 执行）等。技术架构与开发流程请参阅 [docs/architecture.md](docs/architecture.md) 和 [docs/development.md](docs/development.md)；常用检查命令为 `pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`。
 
-如果使用 OpenAI-compatible 接口，需要设置 `PEERLY_MODEL_PROVIDER=openai-compatible`、`PEERLY_MODEL_ID`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。`PEERLY_OPENAI_API` 可以设为 `chat-completions`（默认值）或 `responses`。
+## 后续计划
 
-使用本地配置的真实模型执行一次临时数据目录中的完整私聊和群聊 smoke test：
+当前版本已完成事先预定的第一个里程碑：多个 agent 能够在群聊中自发地进行有序的报数，不会发生混乱。
 
-```sh
-pnpm smoke:agent
-```
-
-该命令会通过真实 HTTP API 创建管理员、Agent、私聊和群聊，验证 Agent 能在无需回复的普通群消息中保持沉默，并响应人类的结构化 mention，结束后删除临时数据。它会消耗少量真实模型额度，不属于默认自动化测试。
-
-使用 5 个真实 Agent 验证冲突协调和连续报数：
-
-```sh
-pnpm smoke:counting
-```
-
-该命令要求五个 Agent 同时从 1 开始报数，最终只接受按消息顺序出现的 `1、2、3、4、5`，并检查每个 Agent 只回复一次。该测试会产生多轮真实模型调用。
-
-Peerly 后端或 Runtime CLI 等调用方负责创建 Runtime，并为每条消息消费一个事件流：
-
-```ts
-import { createAgentRuntimeFromEnvironment } from "@peerly/agent-runtime";
-
-const runtime = await createAgentRuntimeFromEnvironment({
-  host: {
-    async attemptReply(input) {
-      // 平台在这里原子检查 expectedSequence、持久化正式消息并返回结果。
-      return {
-        status: "published",
-        messageId: "message-2",
-        sequence: input.expectedSequence + 1,
-        createdAt: new Date().toISOString(),
-        messages: [],
-      };
-    },
-  },
-});
-
-const agent = await runtime.createAgent({
-  name: "研究助手",
-  instructions: "帮助用户查找可靠资料。",
-});
-
-const controller = new AbortController();
-for await (const event of runtime.deliverMessage(
-  {
-    deliveryId: "delivery-1",
-    agentId: agent.id,
-    agentPrincipalId: agent.id,
-    conversation: { id: "conversation-1", type: "direct" },
-    messages: [
-      {
-        id: "message-1",
-        sequence: 1,
-        sender: { id: "human-1", type: "human", name: "Alice" },
-        createdAt: new Date().toISOString(),
-        content: { type: "text", text: "我们应该先研究什么？" },
-      },
-    ],
-  },
-  { signal: controller.signal },
-)) {
-  if (event.type === "thinking_delta") process.stdout.write(event.delta);
-}
-await runtime.close();
-```
-
-Runtime 将 `(agentId, conversationId)` 映射到 Pi 私有 session 和独立消息池。同一映射中的消息串行处理，不同 Conversation 可以并行。调用方通过 `AbortSignal` 取消正在执行或仍在排队的消息。群聊公开消息都会由 Agent 判断是否需要回复；私聊和人类明确 mention 当前 Agent 时必须尝试回复。普通模型输出是 Thinking 活动；只有 `reply` 工具调用会请求 Host 发布正式消息。Host 使用 `expectedSequence` 原子检查会话是否变化，发生冲突时把新增消息返回 Agent 重新判断。Provider 凭证不会写入 Agent Definition。
+后续计划实现更复杂的多 agent 协作机制，让 agent session 不再绑定到单个聊天（私聊/群聊），而是支持 agent 同时查看甚至发起多个私聊 or 群聊，并自主选择何时在哪些聊天中进行回复。下一个里程碑是能够让多个 agent 在不经过任何人工干预的情况下完整的玩完一盘狼人杀，这要求 agent 在多个群聊/私聊中处理不同层次的信息：所有人白天在公共聊天中讨论；夜晚时上帝需要和不同角色进行私聊，并且多匹狼需要在夜晚进行秘密群聊。预计在聊天之上新增一个房间层级，一个 agent session 可以获取房间内所有聊天的信息。
