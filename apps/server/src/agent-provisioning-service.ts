@@ -22,4 +22,10 @@ export class AgentProvisioningService {
       throw error;
     }
   }
+
+  async delete(principalId: string, actorId?: string) {
+    const principal = this.peerly.requireActiveAgent(principalId, actorId);
+    await this.runtime.deleteAgent(principal.runtimeAgentId);
+    return this.peerly.deactivateAgent(principalId, actorId);
+  }
 }

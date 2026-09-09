@@ -44,6 +44,15 @@ export class PiSessionStore {
     return repository.open(metadata, BACKGROUND_CONTEXT);
   }
 
+  async closeAgent(agentId: string): Promise<void> {
+    const repository = this.repositories.get(agentId);
+    if (!repository) return;
+    await repository.close(BACKGROUND_CONTEXT);
+    if (this.repositories.get(agentId) === repository) {
+      this.repositories.delete(agentId);
+    }
+  }
+
   close(): Promise<void> {
     this.closePromise ??= Promise.all(
       [...this.repositories.values()].map((repository) => repository.close(BACKGROUND_CONTEXT)),

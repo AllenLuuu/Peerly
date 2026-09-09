@@ -142,6 +142,93 @@ describe("平台内私聊 Agent", () => {
     expect(runtime.createAgent).not.toHaveBeenCalled();
   });
 
+  it("只有管理员可以删除 Agent，并同步停用平台身份和群成员关系", async () => {
+    const runtime = new FakeAgentRuntime();
+    const app = await makeApp(runtime);
+    const { cookie } = await bootstrapAdministrator(app);
+    const bobResponse = await app.inject({
+      method: "POST",
+      url: "/api/principals/humans",
+      headers: { cookie },
+      payload: { displayName: "Bob" },
+    });
+    const bob = bobResponse.json<{ principal: { id: string } }>().principal;
+    const bobCookie = await selectIdentity(app, bob.id);
+    const researcher = await createAgent(app, cookie, "Researcher");
+
+    const forbidden = await app.inject({
+      method: "DELETE",
+      url: `/api/principals/agents/${researcher.id}`,
+      headers: { cookie: bobCookie },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(runtime.deleteAgent).not.toHaveBeenCalled();
+
+    await app.inject({
+      method: "POST",
+      url: "/api/conversations/direct",
+      headers: { cookie },
+      payload: { participantId: researcher.id },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/conversations/groups",
+      headers: { cookie },
+      payload: { name: "项目群", participantIds: [bob.id, researcher.id] },
+    });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/principals/agents/${researcher.id}`,
+      headers: { cookie },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ deleted: true });
+    expect(runtime.deleteAgent).toHaveBeenCalledWith(researcher.runtimeAgentId);
+
+    const principals = await app.inject({
+      method: "GET",
+      url: "/api/principals",
+      headers: { cookie },
+    });
+    expect(
+      principals
+        .json<{ principals: AgentBody[] }>()
+        .principals.find((principal) => principal.id === researcher.id),
+    ).toMatchObject({ status: "disabled" });
+
+    const conversations = await app.inject({
+      method: "GET",
+      url: "/api/conversations",
+      headers: { cookie },
+    });
+    expect(
+      conversations.json<{ conversations: Array<{ type: string; participantIds: string[] }> }>()
+        .conversations,
+    ).toEqual([
+      expect.objectContaining({
+        type: "group",
+        participantIds: expect.not.arrayContaining([researcher.id]),
+      }),
+    ]);
+  });
+
+  it("不会把 Fastify 的空 JSON 请求错误改写成 500", async () => {
+    const app = await makeApp(new FakeAgentRuntime());
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/principals/agents/agent-1",
+      headers: { "content-type": "application/json" },
+      payload: "",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: { code: "FST_ERR_CTP_EMPTY_JSON_BODY" },
+    });
+  });
+
   it("用户可以取消当前 Agent 运行", async () => {
     const runtime = new FakeAgentRuntime({ waitForCancellation: true });
     const app = await makeApp(runtime);
@@ -408,7 +495,7 @@ class FakeAgentRuntime implements AgentRuntime {
   async updateAgent(): Promise<RuntimeAgentDefinition> {
     throw new Error("not used");
   }
-  async deleteAgent() {}
+  readonly deleteAgent = vi.fn(async () => undefined);
   async close() {}
 }
 

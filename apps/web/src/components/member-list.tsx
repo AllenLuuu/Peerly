@@ -9,6 +9,7 @@ interface MemberListProps {
   busy: boolean;
   onCreateHuman(displayName: string): Promise<void>;
   onCreateAgent(displayName: string, instructions: string): Promise<void>;
+  onDeleteAgent(principalId: string): Promise<void>;
   onStartDirect(principalId: string): Promise<void>;
 }
 
@@ -18,11 +19,13 @@ export function MemberList({
   busy,
   onCreateHuman,
   onCreateAgent,
+  onDeleteAgent,
   onStartDirect,
 }: MemberListProps) {
   const [displayName, setDisplayName] = useState("");
   const [agentName, setAgentName] = useState("");
   const [agentInstructions, setAgentInstructions] = useState("");
+  const visiblePrincipals = principals.filter((principal) => principal.status === "active");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,7 +49,7 @@ export function MemberList({
     <section aria-label="成员" className="panel member-panel">
       <div className="panel-heading">
         <h2>成员</h2>
-        <span className="count">{principals.length}</span>
+        <span className="count">{visiblePrincipals.length}</span>
       </div>
 
       {current.role === "admin" ? (
@@ -84,7 +87,7 @@ export function MemberList({
       ) : null}
 
       <div className="member-list">
-        {principals.map((principal) => {
+        {visiblePrincipals.map((principal) => {
           const isCurrent = principal.id === current.id;
           return (
             <div className="member-row" key={principal.id}>
@@ -102,16 +105,38 @@ export function MemberList({
               {isCurrent ? (
                 <span className="self-badge">你</span>
               ) : (
-                <button
-                  aria-label={`与 ${principal.displayName} 私聊`}
-                  className="icon-button"
-                  disabled={busy}
-                  onClick={() => void onStartDirect(principal.id)}
-                  title={`与 ${principal.displayName} 私聊`}
-                  type="button"
-                >
-                  ↗
-                </button>
+                <span className="member-actions">
+                  <button
+                    aria-label={`与 ${principal.displayName} 私聊`}
+                    className="icon-button"
+                    disabled={busy}
+                    onClick={() => void onStartDirect(principal.id)}
+                    title={`与 ${principal.displayName} 私聊`}
+                    type="button"
+                  >
+                    ↗
+                  </button>
+                  {current.role === "admin" && principal.type === "agent" ? (
+                    <button
+                      aria-label={`删除 Agent ${principal.displayName}`}
+                      className="icon-button delete-agent-button"
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          globalThis.confirm(
+                            `确认删除 Agent “${principal.displayName}”？对应的本地 Agent 目录也会被永久删除，且无法撤销。`,
+                          )
+                        ) {
+                          void onDeleteAgent(principal.id);
+                        }
+                      }}
+                      title={`删除 Agent ${principal.displayName}`}
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </span>
               )}
             </div>
           );

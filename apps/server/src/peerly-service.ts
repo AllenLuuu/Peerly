@@ -49,6 +49,11 @@ export interface PreparedAgentDelivery {
   input: DeliverAgentMessageInput;
 }
 
+export interface AgentDeletionResult {
+  principal: AgentPrincipal;
+  updatedConversations: Updated<Conversation>[];
+}
+
 export class PeerlyService {
   readonly #repository: PeerlyRepository;
   readonly #now: () => string;
@@ -153,9 +158,51 @@ export class PeerlyService {
   requireAdministrator(actorId?: string): HumanPrincipal {
     const actor = this.#requireActor(this.#repository.readState(), actorId);
     if (actor.type !== "human" || actor.role !== "admin") {
-      throw new PeerlyError("FORBIDDEN", "Only administrators can create Agents", 403);
+      throw new PeerlyError("FORBIDDEN", "Only administrators can manage Agents", 403);
     }
     return actor;
+  }
+
+  requireActiveAgent(principalId: string, actorId?: string): AgentPrincipal {
+    this.requireAdministrator(actorId);
+    const principal = this.#repository
+      .readState()
+      .principals.find((candidate) => candidate.id === principalId);
+    if (principal?.type !== "agent" || principal.status !== "active") {
+      throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active Agent principal not found", 404);
+    }
+    return principal;
+  }
+
+  async deactivateAgent(principalId: string, actorId?: string): Promise<AgentDeletionResult> {
+    return this.#mutate(async () => {
+      const state = this.#repository.readState();
+      const actor = this.#requireActor(state, actorId);
+      if (actor.type !== "human" || actor.role !== "admin") {
+        throw new PeerlyError("FORBIDDEN", "Only administrators can manage Agents", 403);
+      }
+      const principal = state.principals.find((candidate) => candidate.id === principalId);
+      if (principal?.type !== "agent" || principal.status !== "active") {
+        throw new PeerlyError("PRINCIPAL_NOT_FOUND", "Active Agent principal not found", 404);
+      }
+
+      principal.status = "disabled";
+      const updatedConversations = state.conversations
+        .filter(
+          (conversation) =>
+            conversation.type === "group" && conversation.participantIds.includes(principalId),
+        )
+        .map((conversation) => {
+          const recipientIds = [...conversation.participantIds];
+          conversation.participantIds = conversation.participantIds.filter(
+            (participantId) => participantId !== principalId,
+          );
+          conversation.updatedAt = this.#now();
+          return { value: conversation, recipientIds };
+        });
+      await this.#repository.saveState(state);
+      return { principal, updatedConversations };
+    });
   }
 
   async createDirectConversation(
@@ -266,8 +313,20 @@ export class PeerlyService {
   listConversations(actorId?: string): Conversation[] {
     const state = this.#repository.readState();
     const actor = this.#requireActor(state, actorId);
+    const activePrincipalIds = new Set(
+      state.principals
+        .filter((principal) => principal.status === "active")
+        .map((principal) => principal.id),
+    );
     return state.conversations
-      .filter((conversation) => conversation.participantIds.includes(actor.id))
+      .filter(
+        (conversation) =>
+          conversation.participantIds.includes(actor.id) &&
+          (conversation.type === "group" ||
+            conversation.participantIds.every((principalId) =>
+              activePrincipalIds.has(principalId),
+            )),
+      )
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 

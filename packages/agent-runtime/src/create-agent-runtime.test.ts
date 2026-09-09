@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentRuntimeOperationError, createAgentRuntime } from "./index.js";
+import { agentDirectory } from "./agent-paths.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -121,8 +122,9 @@ describe("Agent Runtime definition management", () => {
     });
   });
 
-  it("deletes definitions without allowing their IDs to be reused", async () => {
-    const runtime = await createAgentRuntime({ dataDirectory: await makeDataDirectory() });
+  it("deletes the complete Agent directory and allows its ID to be reused", async () => {
+    const dataDirectory = await makeDataDirectory();
+    const runtime = await createAgentRuntime({ dataDirectory });
     const input = {
       id: "archived-agent",
       name: "Archived Agent",
@@ -130,14 +132,19 @@ describe("Agent Runtime definition management", () => {
       model: { provider: "faux", modelId: "test-model" },
     };
     await runtime.createAgent(input);
+    const nestedData = join(agentDirectory(dataDirectory, input.id), "sessions", "history.json");
+    await mkdir(join(agentDirectory(dataDirectory, input.id), "sessions"), { recursive: true });
+    await writeFile(nestedData, "session data", "utf8");
+    await expect(access(agentDirectory(dataDirectory, input.id))).resolves.toBeUndefined();
 
     await runtime.deleteAgent(input.id);
 
     expect(await runtime.listAgents()).toEqual([]);
     await expect(runtime.getAgent(input.id)).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
-    await expect(runtime.createAgent(input)).rejects.toMatchObject({
-      code: "AGENT_ALREADY_EXISTS",
+    await expect(access(agentDirectory(dataDirectory, input.id))).rejects.toMatchObject({
+      code: "ENOENT",
     });
+    await expect(runtime.createAgent(input)).resolves.toMatchObject({ id: input.id });
   });
 
   it("recovers definitions when a new Runtime instance uses the same data directory", async () => {

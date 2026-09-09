@@ -6,7 +6,7 @@ import { runtimeAgentDefinitionSchema, type RuntimeAgentDefinition } from "@peer
 import { z } from "zod";
 
 import type { AgentDefinitionRepository } from "./agent-definition-repository.js";
-import { agentDefinitionPath } from "./agent-paths.js";
+import { agentDefinitionPath, agentDirectory } from "./agent-paths.js";
 
 const storedAgentDefinitionSchema = runtimeAgentDefinitionSchema.extend({
   deletedAt: z.string().datetime({ offset: true }).optional(),
@@ -55,17 +55,8 @@ export class FileAgentDefinitionRepository implements AgentDefinitionRepository 
     await this.writeStored(agent);
   }
 
-  async softDelete(id: string, deletedAt: string): Promise<void> {
-    const current = await this.readStored(id);
-    if (!current) {
-      return;
-    }
-    await this.writeStored({
-      ...current,
-      enabled: false,
-      updatedAt: deletedAt,
-      deletedAt,
-    });
+  async delete(id: string): Promise<void> {
+    await rm(agentDirectory(this.dataDirectory, id), { recursive: true, force: true });
   }
 
   private filePath(id: string): string {

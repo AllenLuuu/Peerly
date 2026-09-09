@@ -1,3 +1,6 @@
+import process from "node:process";
+import { inspect } from "node:util";
+
 import cookie from "@fastify/cookie";
 import {
   conversationIdSchema,
@@ -6,6 +9,7 @@ import {
   createGroupConversationInputSchema,
   createHumanInputSchema,
   listMessagesQuerySchema,
+  principalIdSchema,
   selectDevSessionInputSchema,
   sendMessageInputSchema,
   updateGroupParticipantsInputSchema,
@@ -27,6 +31,9 @@ const conversationParamsSchema = z.strictObject({
 });
 const deliveryParamsSchema = z.strictObject({
   deliveryId: z.string().trim().min(1),
+});
+const agentPrincipalParamsSchema = z.strictObject({
+  principalId: principalIdSchema,
 });
 
 export interface CreatePeerlyAppOptions extends PeerlyServiceOptions {
@@ -66,7 +73,7 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     });
   }
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({
         error: { code: "VALIDATION_ERROR", message: "Request validation failed" },
@@ -77,8 +84,20 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
         error: { code: error.code, message: error.message },
       });
     }
+    if (isClientHttpError(error)) {
+      return reply.status(error.statusCode).send({
+        error: { code: error.code ?? "BAD_REQUEST", message: error.message },
+      });
+    }
+    process.stderr.write(
+      `[peerly] Unhandled request error (${request.id}) ${request.method} ${request.url}\n${inspect(error, { depth: 5 })}\n`,
+    );
     return reply.status(500).send({
-      error: { code: "INTERNAL_ERROR", message: "Internal server error" },
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "Internal server error",
+        requestId: request.id,
+      },
     });
   });
 
@@ -97,6 +116,21 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
     const input = createAgentPrincipalInputSchema.parse(request.body);
     const principal = await agentProvisioning.create(input, actorIdFrom(request));
     return reply.status(201).send({ principal });
+  });
+
+  app.delete("/api/principals/agents/:principalId", async (request) => {
+    if (!agentProvisioning) {
+      throw new PeerlyError("AGENT_RUNTIME_UNAVAILABLE", "Agent Runtime is unavailable", 503);
+    }
+    const { principalId } = agentPrincipalParamsSchema.parse(request.params);
+    const result = await agentProvisioning.delete(principalId, actorIdFrom(request));
+    for (const conversation of result.updatedConversations) {
+      realtime.publish(
+        { type: "conversation.updated", conversation: conversation.value },
+        conversation.recipientIds,
+      );
+    }
+    return { deleted: true };
   });
 
   app.get("/api/principals", async (request) => ({
@@ -196,4 +230,15 @@ export async function createPeerlyApp(options: CreatePeerlyAppOptions): Promise<
 
 function actorIdFrom(request: FastifyRequest): string | undefined {
   return request.cookies[sessionCookieName];
+}
+
+function isClientHttpError(error: unknown): error is Error & { code?: string; statusCode: number } {
+  return (
+    error instanceof Error &&
+    "statusCode" in error &&
+    typeof error.statusCode === "number" &&
+    error.statusCode >= 400 &&
+    error.statusCode < 500 &&
+    (!("code" in error) || error.code === undefined || typeof error.code === "string")
+  );
 }

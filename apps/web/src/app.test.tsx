@@ -164,6 +164,29 @@ describe("Peerly Web", () => {
     expect(screen.queryByRole("button", { name: "停止 Researcher" })).not.toBeInTheDocument();
   });
 
+  it("管理员确认后可以删除 Agent", async () => {
+    const deletedResearcher = { ...researcher, status: "disabled" as const };
+    const api = fakeApi({ session: alice, principals: [alice, researcher] });
+    api.listPrincipals
+      .mockResolvedValueOnce([alice, researcher])
+      .mockResolvedValueOnce([alice, deletedResearcher]);
+    const confirm = vi.spyOn(globalThis, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<App api={api} realtime={new FakeRealtimeClient()} />);
+    expect(await screen.findByText("当前身份：Alice")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "删除 Agent Researcher" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("本地 Agent 目录"));
+    expect(api.deleteAgent).toHaveBeenCalledWith(researcher.id);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "删除 Agent Researcher" }),
+      ).not.toBeInTheDocument(),
+    );
+    confirm.mockRestore();
+  });
+
   it("创建群聊、选择结构化 Agent mention 并管理群成员", async () => {
     const group = groupConversation("conversation_product", "产品讨论", alice.id, [
       alice.id,
@@ -267,6 +290,7 @@ function fakeApi(options: {
     selectSession: vi.fn().mockResolvedValue(alice),
     createHuman: vi.fn().mockResolvedValue(alice),
     createAgent: vi.fn().mockResolvedValue(options.createdAgent ?? researcher),
+    deleteAgent: vi.fn().mockResolvedValue(undefined),
     listPrincipals: vi.fn().mockResolvedValue(options.principals ?? [alice]),
     listConversations: vi.fn().mockResolvedValue(options.conversations ?? []),
     createDirectConversation: vi.fn().mockResolvedValue(createdConversation),

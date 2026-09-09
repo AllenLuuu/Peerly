@@ -25,6 +25,7 @@ export interface PeerlyApi {
   selectSession(principalId: string): Promise<HumanPrincipal>;
   createHuman(displayName: string): Promise<HumanPrincipal>;
   createAgent(displayName: string, instructions: string): Promise<AgentPrincipal>;
+  deleteAgent(principalId: string): Promise<void>;
   listPrincipals(): Promise<Principal[]>;
   listConversations(): Promise<Conversation[]>;
   createDirectConversation(participantId: string): Promise<Conversation>;
@@ -70,6 +71,14 @@ export class HttpPeerlyApi implements PeerlyApi {
     });
     if (result.principal.type !== "agent") throw new Error("服务端未返回 Agent 成员");
     return result.principal;
+  }
+
+  async deleteAgent(principalId: string): Promise<void> {
+    await request(
+      `/api/principals/agents/${encodeURIComponent(principalId)}`,
+      { parse: () => undefined },
+      { method: "DELETE" },
+    );
   }
 
   async listPrincipals(): Promise<Principal[]> {
@@ -142,13 +151,14 @@ async function request<T>(
   schema: ResponseSchema<T>,
   init: RequestInit = {},
 ): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined && init.body !== null && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   const response = await fetch(path, {
     ...init,
     credentials: "include",
-    headers: {
-      "content-type": "application/json",
-      ...init.headers,
-    },
+    headers,
   });
   const responseText = await response.text();
   let body: unknown;
@@ -179,7 +189,11 @@ function readErrorMessage(body: unknown): string {
     "message" in body.error &&
     typeof body.error.message === "string"
   ) {
-    return body.error.message;
+    const requestId =
+      "requestId" in body.error && typeof body.error.requestId === "string"
+        ? body.error.requestId
+        : undefined;
+    return requestId ? `${body.error.message} (request ID: ${requestId})` : body.error.message;
   }
   return "请求失败，请稍后重试";
 }

@@ -396,6 +396,20 @@ textarea:focus {
   padding: 3px 7px;
 }
 
+.member-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.delete-agent-button {
+  border-color: #dfb8ad;
+  color: #9b4432;
+}
+
+.delete-agent-button:hover {
+  background: #fff3ef;
+}
+
 .icon-button {
   width: 30px;
   height: 30px;

@@ -64,7 +64,10 @@ export class AgentRunCoordinator {
     return stream;
   }
 
-  cancelAgent(agentId: string): void {
+  async cancelAgent(agentId: string): Promise<void> {
+    const queueKeys = [...this.messageQueues.keys()].filter((key) =>
+      key.startsWith(`${agentId}\u0000`),
+    );
     for (const queue of this.messageQueues.values()) {
       for (const run of queue) {
         if (run.input.agentId === agentId) this.cancelRun(run);
@@ -72,6 +75,13 @@ export class AgentRunCoordinator {
     }
     for (const run of this.activeRuns) {
       if (run.input.agentId === agentId) this.cancelRun(run);
+    }
+    await Promise.all(
+      queueKeys.map((queueKey) => this.sessionDrains.get(queueKey)).filter(Boolean),
+    );
+    for (const queueKey of queueKeys) {
+      this.messageQueues.delete(queueKey);
+      this.mailboxes.delete(queueKey);
     }
   }
 

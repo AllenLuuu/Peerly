@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,7 @@ import type {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAgentRuntime } from "./index.js";
+import { agentDirectory } from "./agent-paths.js";
 
 const temporaryDirectories: string[] = [];
 const runtimes: AgentRuntime[] = [];
@@ -32,6 +33,21 @@ afterEach(async () => {
 });
 
 describe("Agent Runtime Conversation session", () => {
+  it("关闭会话数据库后删除整个 Agent 目录", async () => {
+    const dataDirectory = await makeDataDirectory();
+    const { faux, models } = makeFauxModels();
+    faux.setResponses([replyResponse("完成")]);
+    const runtime = await makeRuntime(dataDirectory, models);
+    await createAgent(runtime);
+    await collect(runtime.deliverMessage(delivery("创建会话")));
+
+    await runtime.deleteAgent("assistant");
+
+    await expect(access(agentDirectory(dataDirectory, "assistant"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("重启后按 Agent 和 Conversation 恢复上下文", async () => {
     const dataDirectory = await makeDataDirectory();
     const firstModels = makeFauxModels();

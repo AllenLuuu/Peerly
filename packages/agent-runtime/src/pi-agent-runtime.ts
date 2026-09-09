@@ -25,6 +25,7 @@ import { PiSessionStore } from "./pi-session-store.js";
 export class PiAgentRuntime implements AgentRuntime {
   private readonly sessions: PiSessionStore;
   private readonly runs: AgentRunCoordinator;
+  private readonly deletingAgents = new Set<string>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
 
@@ -72,8 +73,18 @@ export class PiAgentRuntime implements AgentRuntime {
   async deleteAgent(id: string): Promise<void> {
     this.assertOpen();
     const agentId = parseInput(agentIdSchema, id);
-    await this.definitions.delete(agentId);
-    this.runs.cancelAgent(agentId);
+    if (this.deletingAgents.has(agentId)) {
+      throw new AgentRuntimeOperationError("AGENT_NOT_FOUND", `Agent '${agentId}' was not found`);
+    }
+    await this.definitions.get(agentId);
+    this.deletingAgents.add(agentId);
+    try {
+      await this.runs.cancelAgent(agentId);
+      await this.sessions.closeAgent(agentId);
+      await this.definitions.delete(agentId);
+    } finally {
+      this.deletingAgents.delete(agentId);
+    }
   }
 
   deliverMessage(
@@ -82,6 +93,12 @@ export class PiAgentRuntime implements AgentRuntime {
   ): AgentRuntimeEventStream {
     this.assertOpen();
     const parsed = parseInput(deliverAgentMessageInputSchema, input);
+    if (this.deletingAgents.has(parsed.agentId)) {
+      throw new AgentRuntimeOperationError(
+        "AGENT_NOT_FOUND",
+        `Agent '${parsed.agentId}' was not found`,
+      );
+    }
     return this.runs.deliverMessage(parsed, options);
   }
 

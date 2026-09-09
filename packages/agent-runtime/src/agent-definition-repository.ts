@@ -6,5 +6,5 @@ export interface AgentDefinitionRepository {
   list(): Promise<RuntimeAgentDefinition[]>;
   create(agent: RuntimeAgentDefinition): Promise<void>;
   update(agent: RuntimeAgentDefinition): Promise<void>;
-  softDelete(id: string, deletedAt: string): Promise<void>;
+  delete(id: string): Promise<void>;
 }

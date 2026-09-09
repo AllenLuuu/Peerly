@@ -100,7 +100,7 @@ export class AgentDefinitionService {
   async delete(id: string): Promise<void> {
     await this.mutate(async () => {
       await this.get(id);
-      await this.repository.softDelete(id, this.now());
+      await this.repository.delete(id);
     });
   }
 

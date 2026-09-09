@@ -183,6 +183,25 @@ export function App({ api, realtime }: AppProps) {
     });
   }
 
+  async function deleteAgent(principalId: string): Promise<void> {
+    await perform(async () => {
+      await api.deleteAgent(principalId);
+      const [nextPrincipals, nextConversations] = await Promise.all([
+        api.listPrincipals(),
+        api.listConversations(),
+      ]);
+      setPrincipals(nextPrincipals);
+      setConversations(nextConversations);
+      const active = activeConversationRef.current;
+      if (active !== null) {
+        const updated = nextConversations.find((conversation) => conversation.id === active.id);
+        activeConversationRef.current = updated ?? null;
+        setActiveConversation(updated ?? null);
+        if (!updated) setMessages([]);
+      }
+    });
+  }
+
   async function startDirect(principalId: string): Promise<void> {
     await perform(async () => {
       const conversation = await api.createDirectConversation(principalId);
@@ -288,6 +307,7 @@ export function App({ api, realtime }: AppProps) {
           current={current}
           onCreateHuman={createHuman}
           onCreateAgent={createAgent}
+          onDeleteAgent={deleteAgent}
           onStartDirect={startDirect}
           principals={principals}
         />
